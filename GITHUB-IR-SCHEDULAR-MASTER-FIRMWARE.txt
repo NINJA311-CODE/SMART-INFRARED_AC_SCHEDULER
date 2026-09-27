@@ -1,0 +1,2104 @@
+/* =============================================================================
+   SMART CLIMATE - AC IR SCHEDULER  (Complete: offline-first + WiFi + persistence)
+   -----------------------------------------------------------------------------
+   Target board : ESP32 30-pin NodeMCU-style (CH340)
+   IRremote lib : v4.x  (Armin Joachimsmeyer)
+   -----------------------------------------------------------------------------
+   WORKS FULLY OFFLINE. WiFi/web is optional and can be switched off.
+     * DS3231 keeps time with no internet (coin-cell backup).
+     * Daily schedule, 35 C emergency, and the one-time dated event all run in
+       the main loop regardless of connectivity.
+     * NEW: set the one-time event AND the clock from the device buttons + OLED,
+       so you never need a phone. (Web page still offers a date picker too.)
+     * NEW: settings saved to flash (NVS). Your daily schedule and armed event
+       survive power loss; the device even resumes cooling after a reboot that
+       happens inside an active event window.
+
+   BUTTON MAP IN MENUS:  Left/Right = move field · Up/Down = change value
+                         OK = save & exit · Back = up one level
+
+   BUILD SWITCHES are just below.
+   ============================================================================= */
+
+// #define DECODE_MODE     // uncomment to build the IR SNIFFER (no WiFi)
+#define USE_NEOPIXEL       // comment out to use 6 discrete LEDs instead
+#define ENABLE_WIFI        // comment out for a pure offline build (still full-featured)
+
+// Bump this by hand whenever a build is meaningfully different, so the
+// Network Info screen shows something more informative than just a raw
+// compile timestamp when you're trying to confirm an OTA update actually
+// landed. __DATE__/__TIME__ below is always accurate automatically (set
+// by the compiler at build time) and needs no manual upkeep, so it's
+// shown alongside this rather than instead of it.
+#define FW_VERSION "1.1"
+
+
+/* ------------------------------ WIFI CONFIG -------------------------------- */
+// WIFI_SSID/PASS are gone - WiFiManager (tzapu) now handles credential entry
+// via its own config portal, and remembers them in its own flash storage.
+#define AP_SSID         "SmartClimate"      // WiFiManager config-portal AP name
+#define AP_PASS         "123456789"        // AP password to enter that portal
+#define WIFI_PORTAL_TIMEOUT_S 180            // give up waiting for setup after 3 min, keep retrying later
+#define ENABLE_NTP      1
+#define NTP_GMT_OFFSET  (YOUR_COUNTRY * 3600)        // Dammam / LOCAL_TIME = UTC+(YOUR_COUNTRY)
+#define NTP_DST_OFFSET  0
+
+/* ------------------------------ MQTT CONFIG --------------------------------
+   Only a username was supplied, no password - HiveMQ Cloud requires both.
+   Fill in MQTT_PASS from your HiveMQ console before this will authenticate.
+   ---------------------------------------------------------------------------- */
+#define MQTT_HOST        "YOUR_MQTT_CLUSTER_URL"
+#define MQTT_PORT        8883
+#define MQTT_USER        "YOUR_MQTT_BROKER_USERNAME"
+#define MQTT_PASS        "YOUR_MQTT_BROKER_PASSWORD"   // <-- fill this in, it was never given
+#define MQTT_CLIENT_ID   "esp32-ac-scheduler-01"
+#define MQTT_TOPIC_CMD    "home/ac/manual_cmd"
+#define MQTT_TOPIC_SCHED  "home/ac/schedule_set"
+#define MQTT_TOPIC_EVENT  "home/ac/event_set"
+#define MQTT_TOPIC_STATUS "home/ac/status"
+#define MQTT_RETRY_MS         5000UL   // how often to retry a dropped MQTT connection
+#define MQTT_PUBLISH_INTERVAL_MS 5000UL   // how often to push a fresh status update
+
+/* ------------------------------ OTA MQTT CONFIG -----------------------------
+   Second, independent broker used ONLY as a private firmware deployment
+   channel - completely separate client, separate connection, separate
+   retry timer from the AC-control broker above.
+
+   CRITICAL - default is OFF, and here's the real bug that taught us why:
+   PubSubClient's .connect() call is BLOCKING - gating how OFTEN we retry
+   behind a millis() timer does NOT make each individual attempt fast. With
+   OTA_MQTT_HOST left as an unresolvable placeholder, every failed DNS
+   lookup froze the ENTIRE firmware (buttons, display, incoming webpage
+   commands - everything) for several seconds, every single retry, forever.
+   That's exactly what caused "buttons don't work, webpage does nothing"
+   the first time this shipped. Leave ENABLE_OTA commented out until you
+   have a REAL, working second broker filled in below - and even then,
+   understand that broker going down mid-deployment will cause the same
+   kind of periodic freeze (much less often now, see OTA_RETRY_MS) for as
+   long as it stays unreachable.
+
+   SECURITY NOTE - current state, by deliberate choice:
+   The local payload-level token check has been removed on request. The
+   "token" field in the payload is now used directly as the GitHub PAT to
+   authorize the download - it is NOT compared against anything local.
+   The ONLY remaining gate on this entire path is OTA_MQTT_USER/PASS below:
+   whoever can authenticate to the OTA broker can make this device fetch
+   and flash any GitHub Release Asset reachable with whatever PAT they
+   supply. This was an informed, explicit tradeoff for a hobby prototype -
+   documented here so future-you (or anyone reading this file) knows it
+   was a choice, not an oversight.
+   ---------------------------------------------------------------------------- */
+#define ENABLE_OTA             // enabled - TLS client now matches HiveMQ Cloud's requirements
+#define OTA_MQTT_HOST    "YOUR_OTA_MQTT_BROKER_URL"
+#define OTA_MQTT_PORT    8883
+#define OTA_MQTT_USER    "YOUR_OTA_MQTT_BROKER_USERNAME"
+#define OTA_MQTT_PASS    "YOUR_OTA_MQTT_BROKER_PASSWORD"
+#define OTA_MQTT_TOPIC   "fleet/firmware/update"
+#define OTA_CLIENT_ID    "esp32-ac-deployer-01"
+// OTA_SHARED_SECRET and a hardcoded GITHUB_PAT removed - the payload's
+// "token" field IS the GitHub PAT now, sent fresh with each request rather
+// than baked into the compiled firmware. The only remaining gate is the
+// OTA broker's own username/password authentication above.
+#define OTA_RETRY_MS     60000UL   // was 5000 - a failed/unreachable OTA broker now only
+                                    // interrupts the device once a minute, not every 5s
+
+
+/* -------------------------------- PIN MAP ---------------------------------- */
+#define PIN_SDA 21
+#define PIN_SCL 22
+#define PIN_IR_SEND 4
+#define PIN_IR_RECV 15
+#define PIN_BUZZER 18
+#define BTN_UP 13
+#define BTN_DOWN 12
+#define BTN_LEFT 14
+#define BTN_RIGHT 27
+#define BTN_OK 26
+#define BTN_BACK 25
+#define PIN_NEOPIXEL 5
+#define NUM_PIXELS 8
+#define LED_RED 32
+#define LED_YELLOW 33
+#define LED_GREEN 19
+#define LED_BLUE 17
+#define LED_ORANGE 16
+#define LED_WHITE 2
+
+
+/* -------------------------------- LIBRARIES --------------------------------
+   Manage Libraries: RTClib, Adafruit SSD1306, Adafruit GFX Library,
+   Adafruit Unified Sensor, Adafruit SHT4x Library, IRremote (v4.x), Adafruit NeoPixel.
+   WiFi.h / WebServer.h / time.h / Preferences.h ship with the ESP32 core.
+   --------------------------------------------------------------------------- */
+#include <Wire.h>
+#include <string.h>   // memcpy - used by the explicit (non-padded) NVS serialization helpers below
+
+
+/* ###########################################################################
+   #########################   MODE A: IR SNIFFER   ##########################
+   ########################################################################### */
+#ifdef DECODE_MODE
+
+#define RAW_BUFFER_LENGTH 750
+#include <IRremote.hpp>
+
+void setup() {
+  Serial.begin(115200);
+  delay(300);
+  Serial.println(F("\n=== IR SNIFFER ==="));
+  Serial.println(F("Point your AC remote at the VS1838B (pin 15) and press a button."));
+  IrReceiver.begin(PIN_IR_RECV, DISABLE_LED_FEEDBACK);
+}
+void loop() {
+  if (IrReceiver.decode()) {
+    if (IrReceiver.decodedIRData.flags & IRDATA_FLAGS_WAS_OVERFLOW) {
+      Serial.println(F("!! Code too long. Increase RAW_BUFFER_LENGTH."));
+    } else {
+      Serial.println();
+      IrReceiver.printIRResultShort(&Serial);
+      Serial.println(F("Copy this ---------------------------------------"));
+      IrReceiver.compensateAndPrintIRResultAsCArray(&Serial, true);
+      Serial.println(F("-------------------------------------------------"));
+    }
+    IrReceiver.resume();
+  }
+}
+
+
+/* ###########################################################################
+   #####################   MODE B: FULL SCHEDULER APP   ######################
+   ########################################################################### */
+#else
+
+#include <RTClib.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_SHT4x.h>
+#define RAW_BUFFER_LENGTH 400   // Indoor-unit AC frames can run long - default buffer is too small
+#include <IRremote.hpp>
+#include <Preferences.h>
+#ifdef USE_NEOPIXEL
+  #include <Adafruit_NeoPixel.h>
+#endif
+#ifdef ENABLE_WIFI
+  #include <WiFi.h>
+  #include <WebServer.h>
+  #include <time.h>
+  #include <WiFiManager.h>       // tzapu/WiFiManager - credential portal
+  #include <WiFiClientSecure.h>  // TLS transport for MQTT
+  #include <PubSubClient.h>      // MQTT client
+  #include <ArduinoJson.h>       // parses/builds the JSON payloads over MQTT
+  #include <HTTPClient.h>        // OTA firmware download transport
+  #include <HTTPUpdate.h>        // kept for reference; the actual OTA write path below uses Update.h directly for header control
+  #include <Update.h>            // manual flash-write API - needed for custom Authorization/Accept headers
+#endif
+
+/* --------------------------------- OLED ------------------------------------ */
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_ADDR 0x3C
+#define YELLOW_ZONE 16
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+/* -------------------------------- Devices ---------------------------------- */
+RTC_DS3231 rtc;
+Adafruit_SHT4x sht40 = Adafruit_SHT4x();
+Preferences prefs;
+#ifdef USE_NEOPIXEL
+  Adafruit_NeoPixel ring(NUM_PIXELS, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
+#endif
+#ifdef ENABLE_WIFI
+  WebServer server(80);
+  String  ipStr = "";
+  bool    wifiConnected = false;
+  bool    apMode = false;
+#endif
+
+
+/* =============================================================================
+   RAW IR COMMAND TABLES  (PLACEHOLDERS - replace with your sniffed codes)
+   ============================================================================= */
+const uint16_t RAW_AC_ON[]  = { 9000, 4500, 560, 1690, 560, 560, 560, 1690, 560, 39416 };
+const uint16_t RAW_AC_OFF[] = { 9000, 4500, 560,  560, 560,1690, 560,  560, 560, 39416 };
+// Single shared placeholder used as the fallback for ANY temp not yet
+// registered - now that every degree 17-30 gets its own learned slot,
+// having 14 separate fake arrays added nothing real; they're all equally
+// "not the real AC code" until you register that specific degree.
+const uint16_t RAW_SET_PLACEHOLDER[] = { 9000, 4500, 560, 1690, 560, 1690, 560, 560, 560, 39416 };
+#define ARRLEN(a) (sizeof(a) / sizeof((a)[0]))
+#define TEMP_MIN 17
+#define TEMP_MAX 30
+#define TEMP_COUNT (TEMP_MAX - TEMP_MIN + 1)   // 14 distinct settable degrees
+#define IR_KHZ 38
+
+/* =============================================================================
+   LEARNED IR CODES  (populated live by the on-device "Register new AC" wizard)
+   -----------------------------------------------------------------------------
+   Each slot holds a raw mark/space timing array captured straight off your
+   real indoor-unit remote via the VS1838B receiver, persisted to flash (NVS) so
+   it survives reboots. Until a slot is learned, its function silently falls
+   back to the placeholder array above - so nothing breaks if you skip a step,
+   it just won't control the real AC for that particular function yet.
+   -----------------------------------------------------------------------------
+   STORAGE FORMAT: IRremote's compensateAndStoreIRResultInArray() fills a
+   uint8_t "tick" array (each byte = one mark/space duration / MICROS_PER_TICK,
+   i.e. divided by 50us) - NOT a uint16_t microsecond array. That's why data[]
+   below is uint8_t, and why sendLearnedOrFallback() multiplies back by
+   MICROS_PER_TICK into a temporary uint16_t buffer before calling sendRaw().
+   ============================================================================= */
+#define MAX_RAW_LEN RAW_BUFFER_LENGTH   // = 400: a slot can hold the longest frame the
+                                        // receive buffer can physically capture, so a
+                                        // indoor-unit frame that fits the buffer always fits
+                                        // the slot - no truncation path exists.
+struct LearnedCode { uint8_t data[MAX_RAW_LEN]; uint16_t len = 0; bool learned = false; };
+LearnedCode learnedOn, learnedOff;
+LearnedCode learnedTemp[TEMP_COUNT];   // index 0 = 17C, index 13 = 30C
+
+// -----------------------------------------------------------------------
+// LearnedCode persistence - EXPLICIT field-by-field, NOT a raw struct blob.
+//
+// The previous version did prefs.putBytes(key, &c, sizeof(c)), writing the
+// struct's raw in-memory bytes straight to flash. That includes any
+// COMPILER-INSERTED PADDING between/after the struct's fields (needed so
+// `uint16_t len` sits on a 2-byte-aligned address) - padding bytes are
+// never touched by the " = 0" / " = false" default member initializers,
+// so whatever uninitialized garbage happened to be sitting in RAM at save
+// time got written into flash right alongside the real data. Padding size
+// and position depend on compiler version/ABI, which is exactly why this
+// is fragile rather than reliably broken every time - explaining
+// intermittent, slow corruption after "some" reboots rather than every one.
+//
+// Fix: serialize only the real fields, in a fixed, explicit layout with no
+// gaps. This format is also now independent of however the compiler
+// chooses to lay out the C++ struct, so it's stable across rebuilds too.
+//   Bytes 0..1   : len (uint16_t, little-endian via 2 explicit bytes)
+//   Byte  2      : learned (0 or 1)
+//   Bytes 3..    : data[0..len-1] (only the bytes actually used - not the
+//                  full 400-byte array, which also shrinks flash usage)
+void saveLearnedCode(const char* key, LearnedCode &c) {
+  uint8_t header[3];
+  header[0] = (uint8_t)(c.len & 0xFF);
+  header[1] = (uint8_t)((c.len >> 8) & 0xFF);
+  header[2] = c.learned ? 1 : 0;
+
+  // Build one contiguous buffer (header + only the used data bytes) so this
+  // is a single putBytes() call - NVS writes aren't free, and this halves
+  // the flash-wear and write-time cost per save versus two separate calls.
+  static uint8_t writeBuf[3 + MAX_RAW_LEN];
+  memcpy(writeBuf, header, 3);
+  uint16_t dataLen = (c.len <= MAX_RAW_LEN) ? c.len : 0;   // never copy past our own buffer
+  if (dataLen > 0) memcpy(writeBuf + 3, c.data, dataLen);
+
+  prefs.begin("ircodes", false);
+  prefs.putBytes(key, writeBuf, 3 + dataLen);
+  prefs.end();
+}
+
+void loadLearnedCode(const char* key, LearnedCode &c) {
+  prefs.begin("ircodes", true);
+
+  size_t storedLen = prefs.isKey(key) ? prefs.getBytesLength(key) : 0;
+  // Must have at least the 3-byte header, and the data portion (storedLen-3)
+  // must fit in our fixed-size array - anything else is a stale/foreign
+  // blob (e.g. from the old raw-struct format) and is safely ignored,
+  // leaving the slot unlearned rather than reading it as valid.
+  if (storedLen >= 3 && storedLen <= (size_t)(3 + MAX_RAW_LEN)) {
+    static uint8_t readBuf[3 + MAX_RAW_LEN];
+    size_t got = prefs.getBytes(key, readBuf, storedLen);
+    if (got == storedLen) {
+      uint16_t len = (uint16_t)readBuf[0] | ((uint16_t)readBuf[1] << 8);
+      bool learned = readBuf[2] != 0;
+      // Cross-check: the header's own claimed length must match how many
+      // data bytes actually followed it. A mismatch means corruption
+      // (or a foreign/old-format blob) - reject rather than trust either
+      // value in isolation.
+      if (len == (storedLen - 3) && len <= MAX_RAW_LEN) {
+        c.len = len;
+        c.learned = learned;
+        if (len > 0) memcpy(c.data, readBuf + 3, len);
+      }
+      // else: leave c at its existing default-constructed state
+      // (len=0, learned=false) - falls back to the placeholder code.
+    }
+  }
+
+  prefs.end();
+}
+void loadAllLearnedCodes() {
+  loadLearnedCode("ir_on",  learnedOn);
+  loadLearnedCode("ir_off", learnedOff);
+  char key[12];
+  for (uint8_t i = 0; i < TEMP_COUNT; i++) {
+    snprintf(key, sizeof(key), "ir_t%d", TEMP_MIN + i);
+    loadLearnedCode(key, learnedTemp[i]);
+  }
+}
+uint32_t lastIRSendMs = 0;   // lets the async learn-wizard reject our own transmissions
+void sendLearnedOrFallback(LearnedCode &c, const uint16_t* fallback, uint16_t fallbackLen) {
+  if (c.learned && c.len > 0) {
+    uint16_t microsBuf[MAX_RAW_LEN];
+    for (uint16_t i = 0; i < c.len; i++) microsBuf[i] = (uint16_t)c.data[i] * MICROS_PER_TICK;
+    IrSender.sendRaw(microsBuf, c.len, IR_KHZ);
+  } else {
+    IrSender.sendRaw(fallback, fallbackLen, IR_KHZ);
+  }
+  lastIRSendMs = millis();
+}
+
+/* -----------------------------------------------------------------------
+   Live IR capture for the "Register new AC" wizard.
+   NOTE: this is the one part of the whole project that is genuinely fiddly
+   to get exactly right without testing on the real hardware - if a capture
+   silently produces a code that doesn't control the AC, first suspect this
+   raw-timing conversion before suspecting your wiring.
+   ----------------------------------------------------------------------- */
+#define IR_CAPTURE_TIMEOUT_MS 8000
+/* Capture is fully NON-BLOCKING: the wizard arms a listening window and the
+   main loop polls serviceIRCapture() (defined with the wizard's state
+   machine below) once per pass. The web server, DHT reads, emergency
+   checks, buttons, and display all keep running during the 8 s window. */
+
+/* =============================================================================
+   APPLICATION STATE
+   ============================================================================= */
+enum Screen { SCREEN_DASHBOARD, SCREEN_MENU, SCREEN_EDIT, SCREEN_EVENT, SCREEN_SETCLOCK, SCREEN_NETINFO, SCREEN_REGISTER, SCREEN_REMOTE };
+Screen currentScreen = SCREEN_DASHBOARD;
+
+#define MENU_COUNT 7
+#define MENU_PAGE_SIZE 3
+uint8_t menuIndex = 0;
+
+// "Register new AC" wizard - one step per capture, walked with OK/Left/Right.
+enum RegStep { REG_INTRO, REG_CAP_ON, REG_CAP_OFF, REG_CAP_TEMP, REG_DONE };
+uint8_t regStep = REG_INTRO;
+uint8_t regTempIndex = 0;   // which of the 14 temps (0=17C .. 13=30C) while regStep==REG_CAP_TEMP
+// REGP_TESTFIRE: after a successful capture, offers to immediately fire the
+// just-learned code at the real indoor unit before moving on - catches a
+// bad/garbled capture right away instead of only discovering it days later
+// during normal use.
+enum RegPhase { REGP_INSTRUCT, REGP_LISTENING, REGP_RESULT, REGP_TESTFIRE };
+uint8_t  regPhase = REGP_INSTRUCT;
+bool     regLastCaptureOK = false;
+uint32_t regListenStart = 0;   // millis() when the async 8 s capture window opened
+uint8_t  regIntroPage = 0;     // which page of the scrollable intro instructions is shown
+
+struct Schedule {
+  uint8_t startH = 8,  startM = 0;
+  uint8_t endH   = 17, endM   = 0;
+  uint8_t targetC = 22;
+  bool    enabled = true;
+};
+Schedule sched;
+enum EditField { F_START_H, F_START_M, F_END_H, F_END_M, F_TARGET, F_ENABLED, F_COUNT };
+uint8_t editField = F_START_H;
+
+struct OneTimeEvent {
+  bool     enabled  = false;
+  bool     fired    = false;
+  bool     offFired = false;
+  uint16_t year     = 2026;
+  uint8_t  month    = 7, day = 15, hour = 6, minute = 0;
+  uint8_t  targetC  = 22;
+  bool     autoOff  = true;
+  uint8_t  offHours = 3;
+};
+OneTimeEvent otEvent;
+enum EvField { EV_MONTH, EV_DAY, EV_HOUR, EV_MIN, EV_TARGET, EV_OFF, EV_ARMED, EV_COUNT };
+uint8_t evField = EV_MONTH;
+
+struct ClockEdit { uint16_t year = 2026; uint8_t month = 7, day = 1, hour = 12, minute = 0; };
+ClockEdit clk;
+enum ScField { SC_YEAR, SC_MONTH, SC_DAY, SC_HOUR, SC_MIN, SC_COUNT };
+uint8_t scField = SC_YEAR;
+
+bool    acOn      = false;
+uint8_t acSetTemp = 22;
+float   roomTempC = 0.0, roomHum = 0.0;
+bool    dhtValid  = false;
+bool    emergencyActive = false;
+bool    manualOverride  = false;
+uint32_t buzzerOffAt = 0;
+uint32_t lastDhtRead = 0, lastDisplay = 0;
+const uint32_t DHT_INTERVAL = 2000, DISPLAY_INTERVAL = 250;
+
+// --- Emergency override hysteresis/cooldown (fixes rapid re-trigger at ~35C) ---
+const float    EMERGENCY_TRIGGER_C    = 35.0;  // must reach this to ARM
+const float    EMERGENCY_CLEAR_C      = 24.0;  // must drop below this to DISARM (11C dead-band)
+const uint32_t EMERGENCY_RETRIGGER_MS = 60000; // while still critical, re-blast at most once/60s
+uint32_t lastEmergencyFire   = 0;
+uint32_t emergencyStartTime  = 0;
+
+// Minimum enforced AC runtime once the emergency alarm fires - stops the AC
+// from cutting out after a brief dip below EMERGENCY_CLEAR_C (e.g. someone
+// stops blowing on the sensor for a few seconds). Real installs want a full
+// hour of runtime; for the LIVE EXHIBITION DEMO, uncomment DEMO_FAST_TIMERS
+// below so you can actually show the lockout clearing in ~15s instead of
+// making the judges wait an hour. Comment it back out for the real build.
+// #define DEMO_FAST_TIMERS
+#ifdef DEMO_FAST_TIMERS
+  const uint32_t EMERGENCY_MIN_RUN_MS = 15000UL;      // demo stand-in: 15 seconds
+#else
+  const uint32_t EMERGENCY_MIN_RUN_MS = 3600000UL;    // real spec: 1 hour minimum
+#endif
+
+
+/* =============================================================================
+   PERSISTENCE  (NVS via Preferences) - survives power loss
+   ============================================================================= */
+// Same fix as saveLearnedCode/loadLearnedCode above: explicit per-field
+// serialization instead of a raw sizeof(struct) blob, to eliminate the
+// compiler-padding corruption risk (OneTimeEvent's mixed bool/uint16_t/
+// uint8_t layout has the same padding-byte exposure as LearnedCode did -
+// Schedule happens not to need padding with its current field order, but
+// is serialized explicitly too so its format doesn't silently break if a
+// field is ever added or reordered).
+const uint8_t SCHED_FORMAT_VERSION = 1;
+const uint8_t EVENT_FORMAT_VERSION = 1;
+
+void saveSettings() {
+  prefs.begin("climate", false);
+
+  uint8_t schedBuf[6];
+  schedBuf[0] = SCHED_FORMAT_VERSION;
+  schedBuf[1] = sched.startH;
+  schedBuf[2] = sched.startM;
+  schedBuf[3] = sched.endH;
+  schedBuf[4] = sched.endM;
+  schedBuf[5] = sched.targetC;
+  // enabled packed into a 2nd byte alongside the version would save a
+  // byte, but a dedicated byte keeps this trivially readable/debuggable -
+  // NVS space is not a constraint here (this struct is tiny).
+  uint8_t schedBuf2[1] = { (uint8_t)(sched.enabled ? 1 : 0) };
+  prefs.putBytes("sched",  schedBuf, sizeof(schedBuf));
+  prefs.putBytes("schedE", schedBuf2, sizeof(schedBuf2));
+
+  uint8_t evBuf[11];
+  evBuf[0] = EVENT_FORMAT_VERSION;
+  evBuf[1] = otEvent.enabled  ? 1 : 0;
+  evBuf[2] = otEvent.fired    ? 1 : 0;
+  evBuf[3] = otEvent.offFired ? 1 : 0;
+  evBuf[4] = (uint8_t)(otEvent.year & 0xFF);
+  evBuf[5] = (uint8_t)((otEvent.year >> 8) & 0xFF);
+  evBuf[6] = otEvent.month;
+  evBuf[7] = otEvent.day;
+  evBuf[8] = otEvent.hour;
+  evBuf[9] = otEvent.minute;
+  evBuf[10] = otEvent.targetC;
+  uint8_t evBuf2[2] = { (uint8_t)(otEvent.autoOff ? 1 : 0), otEvent.offHours };
+  prefs.putBytes("event",  evBuf, sizeof(evBuf));
+  prefs.putBytes("eventE", evBuf2, sizeof(evBuf2));
+
+  prefs.end();
+}
+
+void loadSettings() {
+  prefs.begin("climate", true);
+
+  if (prefs.isKey("sched") && prefs.getBytesLength("sched") == 6 &&
+      prefs.isKey("schedE") && prefs.getBytesLength("schedE") == 1) {
+    uint8_t schedBuf[6], schedBuf2[1];
+    prefs.getBytes("sched", schedBuf, sizeof(schedBuf));
+    prefs.getBytes("schedE", schedBuf2, sizeof(schedBuf2));
+    if (schedBuf[0] == SCHED_FORMAT_VERSION) {
+      sched.startH  = constrain(schedBuf[1], 0, 23);
+      sched.startM  = constrain(schedBuf[2], 0, 59);
+      sched.endH    = constrain(schedBuf[3], 0, 23);
+      sched.endM    = constrain(schedBuf[4], 0, 59);
+      sched.targetC = constrain(schedBuf[5], TEMP_MIN, TEMP_MAX);
+      sched.enabled = schedBuf2[0] != 0;
+    }
+    // else: unknown format version - leave sched at its compiled-in
+    // defaults rather than trusting bytes we don't recognize the shape of.
+  }
+
+  if (prefs.isKey("event") && prefs.getBytesLength("event") == 11 &&
+      prefs.isKey("eventE") && prefs.getBytesLength("eventE") == 2) {
+    uint8_t evBuf[11], evBuf2[2];
+    prefs.getBytes("event", evBuf, sizeof(evBuf));
+    prefs.getBytes("eventE", evBuf2, sizeof(evBuf2));
+    if (evBuf[0] == EVENT_FORMAT_VERSION) {
+      otEvent.enabled  = evBuf[1] != 0;
+      otEvent.fired    = evBuf[2] != 0;
+      otEvent.offFired = evBuf[3] != 0;
+      otEvent.year     = (uint16_t)evBuf[4] | ((uint16_t)evBuf[5] << 8);
+      otEvent.month    = constrain(evBuf[6], 1, 12);
+      otEvent.day      = constrain(evBuf[7], 1, 31);
+      otEvent.hour     = constrain(evBuf[8], 0, 23);
+      otEvent.minute   = constrain(evBuf[9], 0, 59);
+      otEvent.targetC  = constrain(evBuf[10], TEMP_MIN, TEMP_MAX);
+      otEvent.autoOff  = evBuf2[0] != 0;
+      otEvent.offHours = constrain(evBuf2[1], 0, 24);
+    }
+  }
+
+  prefs.end();
+}
+
+uint8_t daysInMonth(uint8_t m, uint16_t y) {
+  const uint8_t d[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) return 29;
+  return d[(m - 1) % 12];
+}
+
+
+/* =============================================================================
+   BUTTONS (non-blocking debounce)
+   ============================================================================= */
+struct Button { uint8_t pin; bool lastReading; bool stable; uint32_t lastChange; bool pressedEdge; };
+Button buttons[] = {
+  { BTN_UP,   HIGH, HIGH, 0, false }, { BTN_DOWN, HIGH, HIGH, 0, false },
+  { BTN_LEFT, HIGH, HIGH, 0, false }, { BTN_RIGHT,HIGH, HIGH, 0, false },
+  { BTN_OK,   HIGH, HIGH, 0, false }, { BTN_BACK, HIGH, HIGH, 0, false },
+};
+const uint8_t NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
+const uint32_t DEBOUNCE_MS = 30;
+enum { B_UP, B_DOWN, B_LEFT, B_RIGHT, B_OK, B_BACK };
+
+void scanButtons() {
+  uint32_t now = millis();
+  for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
+    buttons[i].pressedEdge = false;
+    bool reading = digitalRead(buttons[i].pin);
+    if (reading != buttons[i].lastReading) { buttons[i].lastChange = now; buttons[i].lastReading = reading; }
+    if ((now - buttons[i].lastChange) > DEBOUNCE_MS && reading != buttons[i].stable) {
+      buttons[i].stable = reading;
+      if (reading == LOW) buttons[i].pressedEdge = true;
+    }
+  }
+}
+inline bool pressed(uint8_t idx) { return buttons[idx].pressedEdge; }
+
+
+/* =============================================================================
+   BUZZER / IR / DEMO
+   ============================================================================= */
+void beep(uint32_t ms) { digitalWrite(PIN_BUZZER, HIGH); buzzerOffAt = millis() + ms; }
+void serviceBuzzer() { if (buzzerOffAt && millis() >= buzzerOffAt) { digitalWrite(PIN_BUZZER, LOW); buzzerOffAt = 0; } }
+
+void sendIR(const uint16_t *data, uint16_t len) { IrSender.sendRaw(data, len, IR_KHZ); }
+void applyACTemp(uint8_t t) {
+  t = constrain(t, TEMP_MIN, TEMP_MAX);
+  acOn = true; acSetTemp = t;
+  sendLearnedOrFallback(learnedTemp[t - TEMP_MIN], RAW_SET_PLACEHOLDER, ARRLEN(RAW_SET_PLACEHOLDER));
+}
+void acPowerOn(uint8_t t) { sendLearnedOrFallback(learnedOn, RAW_AC_ON, ARRLEN(RAW_AC_ON)); delay(50); applyACTemp(t); }
+void acPowerOff() { sendLearnedOrFallback(learnedOff, RAW_AC_OFF, ARRLEN(RAW_AC_OFF)); acOn = false; }
+
+#ifdef USE_NEOPIXEL
+uint32_t setTempColor() {
+  if (!acOn)        return ring.Color(0, 0, 0);
+  if (acSetTemp<=19) return ring.Color(0, 0, 255);
+  if (acSetTemp<=22) return ring.Color(255, 60, 0);
+  return ring.Color(120, 120, 120);
+}
+void updateDemoIndicators() {
+  uint32_t power = acOn ? ring.Color(255,0,0) : ring.Color(4,0,0);
+  ring.setPixelColor(0, power); ring.setPixelColor(1, power);
+  uint32_t amb = (roomTempC > 25.0) ? ring.Color(255,150,0) : ring.Color(0,200,0);
+  ring.setPixelColor(2, amb); ring.setPixelColor(3, amb);
+  uint32_t c = setTempColor();
+  for (uint8_t i = 4; i < NUM_PIXELS; i++) ring.setPixelColor(i, c);
+  ring.show();
+}
+#else
+void updateDemoIndicators() {
+  digitalWrite(LED_RED,    acOn ? HIGH : LOW);
+  digitalWrite(LED_YELLOW, (roomTempC > 25.0) ? HIGH : LOW);
+  digitalWrite(LED_GREEN,  (roomTempC > 25.0) ? LOW : HIGH);
+  bool cold = acOn && acSetTemp <= 19, med = acOn && acSetTemp >= 20 && acSetTemp <= 22, mild = acOn && acSetTemp >= 23;
+  digitalWrite(LED_BLUE, cold ? HIGH : LOW);
+  digitalWrite(LED_ORANGE, med ? HIGH : LOW);
+  digitalWrite(LED_WHITE, mild ? HIGH : LOW);
+}
+#endif
+
+
+/* =============================================================================
+   SENSORS / EMERGENCY / EVENT / SCHEDULE
+   ============================================================================= */
+void readSensors() {
+  if (millis() - lastDhtRead < DHT_INTERVAL) return;
+  lastDhtRead = millis();
+  sensors_event_t humidity, temp;
+  if (!sht40.getEvent(&humidity, &temp)) { dhtValid = false; return; }
+  float t = temp.temperature, h = humidity.relative_humidity;
+  if (isnan(t) || isnan(h)) { dhtValid = false; return; }
+  roomTempC = t; roomHum = h; dhtValid = true;
+}
+
+void checkEmergency() {
+  if (!dhtValid) return;      // never act on a stale/failed sensor read
+  if (manualOverride) return; // person has taken manual control from the webpage - they win
+
+  uint32_t now = millis();
+
+  if (roomTempC >= EMERGENCY_TRIGGER_C) {
+    if (!emergencyActive) {
+      // Fresh trigger: arm, alarm, blast, and start the minimum-runtime clock.
+      emergencyActive    = true;
+      emergencyStartTime = now;
+      lastEmergencyFire  = now;
+      beep(2000);
+      acPowerOn(20);
+    } else if (now - lastEmergencyFire >= EMERGENCY_RETRIGGER_MS) {
+      // Still critically hot a full cooldown later - hit it again,
+      // but at most once per minute (stops IR-spamming/buzzer-spamming
+      // the AC if the room hovers right at the threshold).
+      lastEmergencyFire = now;
+      beep(2000);
+      acPowerOn(20);
+    }
+    // else: already active and still within cooldown - do nothing, just hold.
+  }
+  else if (emergencyActive && roomTempC < EMERGENCY_CLEAR_C) {
+    // Two conditions must BOTH be true to clear:
+    //  1) Temp has dropped below the hysteresis dead-band (not just dipped
+    //     below the 40C trigger point), AND
+    //  2) The AC has already run for the enforced minimum runtime.
+    // This is what stops a brief 30-second dip from flickering the AC off.
+    if (now - emergencyStartTime >= EMERGENCY_MIN_RUN_MS) {
+      emergencyActive = false;
+    }
+    // else: temp is fine but we're still inside the mandatory run window -
+    // hold ON regardless. checkSchedule()/checkOneTimeEvent() are both
+    // skipped whenever emergencyActive is true, so nothing else can
+    // interrupt this lockout.
+  }
+  // else: between EMERGENCY_CLEAR_C and EMERGENCY_TRIGGER_C - hold
+  // whatever state we were already in.
+}
+
+void checkOneTimeEvent(const DateTime &now) {
+  if (emergencyActive) return;
+  if (!otEvent.enabled) return;
+  DateTime target(otEvent.year, otEvent.month, otEvent.day, otEvent.hour, otEvent.minute, 0);
+
+  if (!otEvent.fired && now.unixtime() >= target.unixtime()) {
+    otEvent.fired = true;
+    manualOverride = true;              // hold: daily schedule won't undo it
+    acPowerOn(otEvent.targetC);
+    beep(200);
+    saveSettings();                     // remember it fired (survives reboot)
+  }
+  if (otEvent.fired && otEvent.autoOff && !otEvent.offFired) {
+    uint32_t offAt = target.unixtime() + (uint32_t)otEvent.offHours * 3600UL;
+    if (now.unixtime() >= offAt) {
+      otEvent.offFired = true;
+      otEvent.enabled  = false;
+      manualOverride   = false;
+      acPowerOff();
+      beep(200);
+      saveSettings();
+    }
+  }
+}
+
+inline uint16_t toMinutes(uint8_t h, uint8_t m) { return (uint16_t)h * 60 + m; }
+
+// True when minute-of-day `n` falls inside the schedule window [s, e).
+// Handles both cases:
+//   same-day   (s < e): e.g. 08:00 -> 17:00  ->  ON when  s <= n < e
+//   overnight  (s > e): e.g. 11:00 -> 09:00  ->  ON when  n >= s  OR  n < e
+//     (window crosses midnight: 11:00 today until 09:00 tomorrow)
+//   degenerate (s == e): zero-length window -> always OFF
+inline bool schedWindowOn(uint16_t n, uint16_t s, uint16_t e) {
+  if (s == e) return false;                 // zero-length window
+  if (s < e)  return (n >= s && n < e);     // same-day window
+  return (n >= s || n < e);                 // overnight window (wraps midnight)
+}
+
+void checkSchedule(const DateTime &now) {
+  if (emergencyActive) return;
+  if (manualOverride)  return;
+  if (!sched.enabled)  return;
+  uint16_t n = toMinutes(now.hour(), now.minute());
+  uint16_t s = toMinutes(sched.startH, sched.startM), e = toMinutes(sched.endH, sched.endM);
+  bool on = schedWindowOn(n, s, e);
+  if (on && !acOn)                              acPowerOn(sched.targetC);
+  else if (on && acOn && acSetTemp != sched.targetC) applyACTemp(sched.targetC);
+  else if (!on && acOn)                         acPowerOff();
+}
+
+void nextEventStr(const DateTime &now, char *buf, size_t n) {
+  uint16_t nm = toMinutes(now.hour(), now.minute());
+  uint16_t s = toMinutes(sched.startH, sched.startM), e = toMinutes(sched.endH, sched.endM);
+  if (!sched.enabled)      { snprintf(buf, n, "Next: (disabled)"); return; }
+  if (manualOverride)      { snprintf(buf, n, "Mode: MANUAL");     return; }
+  if (schedWindowOn(nm, s, e)) {
+    // Currently inside the ON window -> the next thing that happens is OFF.
+    // Works for both same-day and overnight windows (e.g. 11:00->09:00
+    // at 13:35 correctly shows "Next: 09:00 OFF").
+    snprintf(buf, n, "Next: %02d:%02d OFF", sched.endH, sched.endM);
+  } else {
+    // Currently OFF -> next thing is ON at start time.
+    // "+" marks that the ON is tomorrow (only possible for a same-day
+    // window after its end time has already passed today).
+    bool onIsTomorrow = (s < e) && (nm >= e);
+    snprintf(buf, n, "Next: %02d:%02d ON%s", sched.startH, sched.startM,
+             onIsTomorrow ? "+" : "");
+  }
+}
+
+
+/* =============================================================================
+   BUTTON HANDLERS  (one per screen)
+   ============================================================================= */
+LearnedCode* regSlotForStep(uint8_t step, const char** key) {
+  static char keyBuf[12];
+  switch (step) {
+    case REG_CAP_ON:  *key = "ir_on";  return &learnedOn;
+    case REG_CAP_OFF: *key = "ir_off"; return &learnedOff;
+    case REG_CAP_TEMP:
+      snprintf(keyBuf, sizeof(keyBuf), "ir_t%d", TEMP_MIN + regTempIndex);
+      *key = keyBuf;
+      return &learnedTemp[regTempIndex];
+    default: *key = nullptr; return nullptr;
+  }
+}
+
+void regStartListening() {
+  IrReceiver.resume();            // flush any stale frame, open the receiver
+  regListenStart = millis();
+  regPhase = REGP_LISTENING;
+}
+
+void regFinishCapture(bool ok) {
+  regLastCaptureOK = ok;
+  regPhase = REGP_RESULT;
+  beep(ok ? 60 : 300);
+}
+
+/* Polled every loop() pass. Does nothing unless the wizard is actively
+   listening, so it costs one branch in normal operation. On success the
+   payload is written to NVS IMMEDIATELY, before the result screen shows. */
+void serviceIRCapture() {
+  if (currentScreen != SCREEN_REGISTER || regPhase != REGP_LISTENING) return;
+
+  if (IrReceiver.decode()) {
+    // Self-echo guard: because the loop stays live while listening, an
+    // emergency/schedule IR blast could bounce into the VS1838B and get
+    // "learned". Discard any frame arriving within 500 ms of our own send.
+    if (millis() - lastIRSendMs < 500 && lastIRSendMs != 0) { IrReceiver.resume(); return; }
+    if (IrReceiver.decodedIRData.flags & IRDATA_FLAGS_WAS_OVERFLOW) {
+      IrReceiver.resume();
+      regFinishCapture(false);            // frame outran RAW_BUFFER_LENGTH - fail cleanly
+      return;
+    }
+    uint16_t rawLenTotal = IrReceiver.decodedIRData.rawlen;
+    if (rawLenTotal < 3) { IrReceiver.resume(); return; }   // noise - keep listening
+    uint16_t n = rawLenTotal - 1;
+    const char* key = nullptr;
+    LearnedCode* c = regSlotForStep(regStep, &key);
+    // Bounds check BEFORE any array write: n can never exceed MAX_RAW_LEN
+    // (both are RAW_BUFFER_LENGTH = 400), but keep the guard as a hard
+    // memory-safety fence in case the two defines ever diverge.
+    if (c == nullptr || n > MAX_RAW_LEN) { IrReceiver.resume(); regFinishCapture(false); return; }
+    // Public, version-stable IRremote v4 API: fills data[] with compensated
+    // tick counts (uint8_t, each = duration / MICROS_PER_TICK). sendRaw()
+    // side of this is handled by sendLearnedOrFallback()'s conversion.
+    IrReceiver.compensateAndStoreIRResultInArray(c->data);
+    c->len = n;
+    c->learned = true;
+    IrReceiver.resume();
+    saveLearnedCode(key, *c);             // persist to NVS immediately on success
+    regFinishCapture(true);
+    return;
+  }
+
+  if (millis() - regListenStart >= IR_CAPTURE_TIMEOUT_MS) regFinishCapture(false);
+}
+const char* regCapLabel(uint8_t step) {
+  static char buf[16];
+  switch (step) {
+    case REG_CAP_ON:  return "AC POWER ON";
+    case REG_CAP_OFF: return "AC POWER OFF";
+    case REG_CAP_TEMP: snprintf(buf, sizeof(buf), "SET TO %dC", TEMP_MIN + regTempIndex); return buf;
+    default: return "";
+  }
+}
+
+void handleOfflineRemote() {
+  if (pressed(B_BACK)) { currentScreen = SCREEN_MENU; beep(20); return; }
+
+  if (pressed(B_OK)) {                        // OK = turn AC off
+    manualOverride = true; emergencyActive = false;
+    acPowerOff();
+    beep(30);
+  }
+  else if (pressed(B_UP)) {                   // UP = increase target temp
+    manualOverride = true; emergencyActive = false;
+    if (acSetTemp < TEMP_MAX) acSetTemp++;
+    if (acOn) applyACTemp(acSetTemp);          // AC already running - push the new setpoint now
+    beep(10);
+  }
+  else if (pressed(B_DOWN)) {                 // DOWN = decrease target temp
+    manualOverride = true; emergencyActive = false;
+    if (acSetTemp > TEMP_MIN) acSetTemp--;
+    if (acOn) applyACTemp(acSetTemp);
+    beep(10);
+  }
+  else if (pressed(B_RIGHT) || pressed(B_LEFT)) {   // either RIGHT or LEFT = turn AC on
+    manualOverride = true; emergencyActive = false;
+    acPowerOn(acSetTemp);
+    beep(30);
+  }
+}
+
+void handleNetInfo() {
+  if (pressed(B_BACK) || pressed(B_OK)) { currentScreen = SCREEN_MENU; beep(20); }
+}
+
+// Step through: ON -> OFF -> TEMP[0..13] -> DONE. Advancing/retreating
+// inside the temp range just moves regTempIndex; it only changes regStep
+// once you fall off either end of that range.
+void regGoNext() {
+  if (regStep == REG_CAP_ON)        regStep = REG_CAP_OFF;
+  else if (regStep == REG_CAP_OFF)  { regStep = REG_CAP_TEMP; regTempIndex = 0; }
+  else if (regStep == REG_CAP_TEMP) {
+    if (regTempIndex + 1 < TEMP_COUNT) regTempIndex++;
+    else regStep = REG_DONE;
+  }
+  regPhase = REGP_INSTRUCT;
+}
+void regGoPrev() {
+  if (regStep == REG_CAP_OFF)       regStep = REG_CAP_ON;
+  else if (regStep == REG_CAP_TEMP) {
+    if (regTempIndex > 0) regTempIndex--;
+    else regStep = REG_CAP_OFF;
+  }
+  regPhase = REGP_INSTRUCT;
+}
+
+void handleRegister() {
+  // While listening, BACK cancels the capture window (back to instructions)
+  // instead of dumping the user out of the wizard mid-step.
+  if (regPhase == REGP_LISTENING) {
+    if (pressed(B_BACK)) { regPhase = REGP_INSTRUCT; beep(20); }
+    return;   // capture itself is handled by serviceIRCapture() in loop()
+  }
+
+  if (pressed(B_BACK)) { currentScreen = SCREEN_MENU; beep(20); return; }
+
+  if (regStep == REG_INTRO) {
+    const uint8_t INTRO_PAGE_COUNT = 4;   // must match drawRegister()'s introPages array
+    if (pressed(B_OK)) { regStep = REG_CAP_ON; regPhase = REGP_INSTRUCT; regIntroPage = 0; beep(20); }
+    else if (pressed(B_UP))   { if (regIntroPage > 0) regIntroPage--; beep(10); }
+    else if (pressed(B_DOWN)) { if (regIntroPage + 1 < INTRO_PAGE_COUNT) regIntroPage++; beep(10); }
+    return;
+  }
+  if (regStep == REG_DONE) {
+    if (pressed(B_OK)) { currentScreen = SCREEN_MENU; beep(20); }
+    return;
+  }
+
+  if (regPhase == REGP_INSTRUCT) {
+    if (pressed(B_OK)) {
+      beep(15);
+      regStartListening();   // opens the async 8 s window; loop() keeps running
+    }
+    else if (pressed(B_RIGHT)) {   // skip this one - it keeps using its placeholder code
+      regGoNext(); beep(10);
+    }
+    else if (pressed(B_LEFT) && regStep != REG_CAP_ON) {
+      regGoPrev(); beep(10);
+    }
+  }
+  else if (regPhase == REGP_RESULT) {
+    if (regLastCaptureOK) {
+      // A capture just succeeded - offer to test-fire it immediately rather
+      // than silently moving on, so a bad/garbled capture is caught here
+      // instead of discovered days later during normal use.
+      if (pressed(B_OK))        { regPhase = REGP_TESTFIRE; beep(10); }
+      else if (pressed(B_LEFT)) { regPhase = REGP_INSTRUCT; beep(10); }   // retry same code
+    } else {
+      if (pressed(B_OK))        { regGoNext(); beep(10); }   // failed capture - just move on, nothing to test-fire
+      else if (pressed(B_LEFT)) { regPhase = REGP_INSTRUCT; beep(10); }   // retry same code
+    }
+  }
+  else if (regPhase == REGP_TESTFIRE) {
+    if (pressed(B_OK)) {
+      // Fire exactly the code slot that was just captured, at its real
+      // temperature target (falls back to the placeholder table for
+      // anything not yet learned - harmless, same as normal operation).
+      const char* key = nullptr;
+      LearnedCode* c = regSlotForStep(regStep, &key);
+      if (c != nullptr) {
+        if (regStep == REG_CAP_ON)       sendLearnedOrFallback(*c, RAW_AC_ON,  ARRLEN(RAW_AC_ON));
+        else if (regStep == REG_CAP_OFF) sendLearnedOrFallback(*c, RAW_AC_OFF, ARRLEN(RAW_AC_OFF));
+        else                              sendLearnedOrFallback(*c, RAW_SET_PLACEHOLDER, ARRLEN(RAW_SET_PLACEHOLDER));
+      }
+      beep(30);
+    }
+    else if (pressed(B_RIGHT)) { regGoNext(); beep(10); }   // done testing - move to the next capture
+    else if (pressed(B_LEFT))  { regPhase = REGP_INSTRUCT; beep(10); }   // not convinced - recapture this one
+  }
+}
+
+void handleMenu() {
+  if (pressed(B_BACK)) { currentScreen = SCREEN_DASHBOARD; beep(20); return; }
+  if (pressed(B_UP))    { menuIndex = (menuIndex + MENU_COUNT - 1) % MENU_COUNT; beep(10); }
+  if (pressed(B_DOWN))  { menuIndex = (menuIndex + 1) % MENU_COUNT; beep(10); }
+  // Page-wise Left/Right: wrap the PAGE and keep the cursor on the same row,
+  // clamping onto the last real item if a page is partially filled. With
+  // MENU_COUNT = 6 and MENU_PAGE_SIZE = 3 this gives exactly two clean pages.
+  if (pressed(B_RIGHT) || pressed(B_LEFT)) {
+    const uint8_t pageCount = (MENU_COUNT + MENU_PAGE_SIZE - 1) / MENU_PAGE_SIZE;
+    uint8_t page = menuIndex / MENU_PAGE_SIZE;
+    uint8_t row  = menuIndex % MENU_PAGE_SIZE;
+    page = pressed(B_RIGHT) ? (page + 1) % pageCount : (page + pageCount - 1) % pageCount;
+    menuIndex = page * MENU_PAGE_SIZE + row;
+    if (menuIndex >= MENU_COUNT) menuIndex = MENU_COUNT - 1;
+    beep(15);
+  }
+  if (pressed(B_OK)) {
+    beep(20);
+    switch (menuIndex) {
+      case 0: manualOverride = true; emergencyActive = false; currentScreen = SCREEN_REMOTE; break;
+      case 1: editField = F_START_H; currentScreen = SCREEN_EDIT; break;
+      case 2: evField = EV_MONTH; currentScreen = SCREEN_EVENT; break;
+      case 3: { DateTime n = rtc.now(); clk.year=n.year(); clk.month=n.month(); clk.day=n.day();
+                clk.hour=n.hour(); clk.minute=n.minute(); scField=SC_YEAR; currentScreen=SCREEN_SETCLOCK; } break;
+      case 4: currentScreen = SCREEN_NETINFO; break;
+      case 5: regStep = REG_INTRO; regPhase = REGP_INSTRUCT; regTempIndex = 0; regIntroPage = 0; currentScreen = SCREEN_REGISTER; break;
+      case 6: currentScreen = SCREEN_DASHBOARD; break;
+    }
+  }
+}
+
+void handleEditDaily() {
+  if (pressed(B_BACK)) { currentScreen = SCREEN_MENU; beep(20); return; }
+  if (pressed(B_OK))   { saveSettings(); manualOverride = false; currentScreen = SCREEN_DASHBOARD; beep(40); return; }
+  if (pressed(B_LEFT))  { editField = (editField + F_COUNT - 1) % F_COUNT; beep(10); }
+  if (pressed(B_RIGHT)) { editField = (editField + 1) % F_COUNT; beep(10); }
+  int8_t d = 0; if (pressed(B_UP)) d = 1; if (pressed(B_DOWN)) d = -1;
+  if (d) {
+    beep(10);
+    switch (editField) {
+      case F_START_H: sched.startH = (sched.startH + 24 + d) % 24; break;
+      case F_START_M: sched.startM = (sched.startM + 60 + d) % 60; break;
+      case F_END_H:   sched.endH   = (sched.endH   + 24 + d) % 24; break;
+      case F_END_M:   sched.endM   = (sched.endM   + 60 + d) % 60; break;
+      case F_TARGET:  sched.targetC += d; if (sched.targetC<TEMP_MIN) sched.targetC=TEMP_MIN; if (sched.targetC>TEMP_MAX) sched.targetC=TEMP_MAX; break;
+      case F_ENABLED: sched.enabled = !sched.enabled; break;
+    }
+  }
+}
+
+void handleEditEvent() {
+  if (pressed(B_OK) || pressed(B_BACK)) {
+    // Commit: pick the next FUTURE occurrence (this year, or next year if past).
+    DateTime now = rtc.now();
+    uint16_t y = now.year();
+    if (DateTime(y, otEvent.month, otEvent.day, otEvent.hour, otEvent.minute, 0).unixtime() <= now.unixtime()) y++;
+    otEvent.year = y;
+    otEvent.fired = false; otEvent.offFired = false;   // re-arm
+    manualOverride = false;   // arming a fresh automated event hands control back to it
+    saveSettings();
+    currentScreen = pressed(B_OK) ? SCREEN_DASHBOARD : SCREEN_MENU;
+    beep(40);
+    return;
+  }
+  if (pressed(B_LEFT))  { evField = (evField + EV_COUNT - 1) % EV_COUNT; beep(10); }
+  if (pressed(B_RIGHT)) { evField = (evField + 1) % EV_COUNT; beep(10); }
+  int8_t d = 0; if (pressed(B_UP)) d = 1; if (pressed(B_DOWN)) d = -1;
+  if (d) {
+    beep(10);
+    switch (evField) {
+      case EV_MONTH:  otEvent.month = ((otEvent.month - 1 + 12 + d) % 12) + 1; break;
+      case EV_DAY: { uint8_t dim = daysInMonth(otEvent.month, rtc.now().year());
+                     otEvent.day = ((otEvent.day - 1 + dim + d) % dim) + 1; } break;
+      case EV_HOUR:   otEvent.hour = (otEvent.hour + 24 + d) % 24; break;
+      case EV_MIN:    otEvent.minute = (otEvent.minute + 60 + d) % 60; break;
+      case EV_TARGET: otEvent.targetC += d; if (otEvent.targetC<TEMP_MIN) otEvent.targetC=TEMP_MIN; if (otEvent.targetC>TEMP_MAX) otEvent.targetC=TEMP_MAX; break;
+      case EV_OFF: { int v = (int)otEvent.offHours + d; if (v<0) v=0; if (v>24) v=24;
+                     otEvent.offHours = v; otEvent.autoOff = (v > 0); } break;
+      case EV_ARMED:  otEvent.enabled = !otEvent.enabled; break;
+    }
+    uint8_t dim = daysInMonth(otEvent.month, rtc.now().year());
+    if (otEvent.day > dim) otEvent.day = dim;
+  }
+}
+
+void handleSetClock() {
+  if (pressed(B_BACK)) { currentScreen = SCREEN_MENU; beep(20); return; }
+  if (pressed(B_OK)) {
+    rtc.adjust(DateTime(clk.year, clk.month, clk.day, clk.hour, clk.minute, 0));
+    currentScreen = SCREEN_DASHBOARD; beep(40); return;
+  }
+  if (pressed(B_LEFT))  { scField = (scField + SC_COUNT - 1) % SC_COUNT; beep(10); }
+  if (pressed(B_RIGHT)) { scField = (scField + 1) % SC_COUNT; beep(10); }
+  int8_t d = 0; if (pressed(B_UP)) d = 1; if (pressed(B_DOWN)) d = -1;
+  if (d) {
+    beep(10);
+    switch (scField) {
+      case SC_YEAR:  clk.year += d; if (clk.year<2024) clk.year=2024; if (clk.year>2099) clk.year=2099; break;
+      case SC_MONTH: clk.month = ((clk.month - 1 + 12 + d) % 12) + 1; break;
+      case SC_DAY: { uint8_t dim = daysInMonth(clk.month, clk.year); clk.day = ((clk.day - 1 + dim + d) % dim) + 1; } break;
+      case SC_HOUR:  clk.hour = (clk.hour + 24 + d) % 24; break;
+      case SC_MIN:   clk.minute = (clk.minute + 60 + d) % 60; break;
+    }
+    uint8_t dim = daysInMonth(clk.month, clk.year); if (clk.day > dim) clk.day = dim;
+  }
+}
+
+void handleButtons() {
+  switch (currentScreen) {
+    case SCREEN_DASHBOARD: if (pressed(B_OK)) { currentScreen = SCREEN_MENU; menuIndex = 0; beep(20); } break;
+    case SCREEN_MENU:      handleMenu(); break;
+    case SCREEN_EDIT:      handleEditDaily(); break;
+    case SCREEN_EVENT:     handleEditEvent(); break;
+    case SCREEN_SETCLOCK:  handleSetClock(); break;
+    case SCREEN_NETINFO:   handleNetInfo(); break;
+    case SCREEN_REGISTER:  handleRegister(); break;
+    case SCREEN_REMOTE:    handleOfflineRemote(); break;
+  }
+}
+
+
+/* =============================================================================
+   DISPLAY
+   ============================================================================= */
+void drawTopBar(const DateTime &now) {
+  display.setTextSize(1); display.setTextColor(SSD1306_WHITE);
+  char line[24];
+  uint8_t h12 = now.hour() % 12; if (h12 == 0) h12 = 12;   // 0 and 12 both display as 12
+  const char* ampm = (now.hour() < 12) ? "AM" : "PM";
+  if (dhtValid) snprintf(line, sizeof(line), "%02d:%02d:%02d%s %2.0fC", h12, now.minute(), now.second(), ampm, roomTempC);
+  else          snprintf(line, sizeof(line), "%02d:%02d:%02d%s --C", h12, now.minute(), now.second(), ampm);
+  display.setCursor(0, 0); display.print(line);
+#ifdef ENABLE_WIFI
+  if (wifiConnected) { display.setCursor(120, 0); display.print(apMode ? 'A' : 'W'); }
+#endif
+  snprintf(line, sizeof(line), "%02d/%02d/%04d", now.day(), now.month(), now.year());
+  display.setCursor(0, 8); display.print(line);
+  display.drawFastHLine(0, YELLOW_ZONE - 1, SCREEN_WIDTH, SSD1306_WHITE);
+}
+
+void drawDashboard(const DateTime &now) {
+  char line[24];
+  display.setCursor(0, 18);
+  if (dhtValid) snprintf(line, sizeof(line), "Hum:%2.0f%%   AC:%s", roomHum, acOn ? "ON " : "OFF");
+  else          snprintf(line, sizeof(line), "Hum:--%%   AC:%s", acOn ? "ON " : "OFF");
+  display.print(line);
+  display.setCursor(0, 30);
+  snprintf(line, sizeof(line), "Set:%2dC  Tgt:%2dC", acSetTemp, sched.targetC);
+  display.print(line);
+
+  char ev[24];
+  if (emergencyActive) {
+    // Show the countdown on the minimum-runtime lockout, so it's visible
+    // on the OLED (not just the web dashboard) why the AC is holding ON
+    // even after the temperature has already dropped.
+    uint32_t elapsed = millis() - emergencyStartTime;
+    uint32_t remainMs = (elapsed < EMERGENCY_MIN_RUN_MS) ? (EMERGENCY_MIN_RUN_MS - elapsed) : 0;
+    uint32_t remainSec = remainMs / 1000UL;
+    snprintf(ev, sizeof(ev), "EMER lock %lu:%02lu", (unsigned long)(remainSec / 60), (unsigned long)(remainSec % 60));
+  }
+  else if (otEvent.enabled && !otEvent.fired)
+    snprintf(ev, sizeof(ev), "1x %02d/%02d %02d:%02d>%2dC", otEvent.day, otEvent.month, otEvent.hour, otEvent.minute, otEvent.targetC);
+  else
+    nextEventStr(now, ev, sizeof(ev));
+  display.setCursor(0, 42); display.print(ev);
+
+  display.setCursor(0, 54); display.print(F("[OK] Menu"));
+}
+
+void drawMenu() {
+  const char* items[MENU_COUNT] = { "Offline remote", "Daily schedule", "One-time event", "Set clock", "Network info", "Register new AC", "Back" };
+  uint8_t page = menuIndex / MENU_PAGE_SIZE;
+  uint8_t pageCount = (MENU_COUNT + MENU_PAGE_SIZE - 1) / MENU_PAGE_SIZE;
+  char hdr[20]; snprintf(hdr, sizeof(hdr), "MENU  (page %d/%d)", page + 1, pageCount);
+  display.setCursor(0, 18); display.print(hdr);
+  uint8_t start = page * MENU_PAGE_SIZE;
+  for (uint8_t i = 0; i < MENU_PAGE_SIZE && (start + i) < MENU_COUNT; i++) {
+    display.setCursor(0, 30 + i * 10);
+    display.print((start + i) == menuIndex ? '>' : ' ');
+    display.print(items[start + i]);
+  }
+  display.setCursor(0, 62); display.print(F("L/R = switch page"));
+}
+
+void drawOfflineRemote() {
+  display.setCursor(0, 18); display.print(F("OFFLINE REMOTE"));
+  char l[24];
+  snprintf(l, sizeof(l), "AC: %s", acOn ? "ON" : "OFF");
+  display.setCursor(0, 30); display.print(l);
+  snprintf(l, sizeof(l), "Temp: %2d C", acSetTemp);
+  display.setCursor(0, 40); display.print(l);
+  display.setCursor(0, 52); display.print(F("OK=Off  Up/Dn=Temp"));
+  display.setCursor(0, 62); display.print(F("L/R=On  Back=Exit"));
+}
+
+void drawNetInfo() {
+  display.setCursor(0, 18); display.print(F("NETWORK INFO"));
+#ifdef ENABLE_WIFI
+  if (!wifiConnected) {
+    display.setCursor(0, 30); display.print(F("WiFi not connected"));
+  } else {
+    display.setCursor(0, 30); display.print(apMode ? F("Mode: Hotspot (AP)") : F("Mode: WiFi station"));
+    if (apMode) { display.setCursor(0, 38); display.print(F("SSID: ")); display.print(AP_SSID); }
+    display.setCursor(0, 46); display.print(F("IP: ")); display.print(ipStr);
+  }
+#else
+  display.setCursor(0, 30); display.print(F("WiFi build disabled"));
+#endif
+  // Firmware version + build date/time - lets you confirm an OTA update
+  // actually took effect straight from the device, without needing Serial
+  // Monitor plugged in.
+  char fw[24];
+  snprintf(fw, sizeof(fw), "FW %s  %s", FW_VERSION, __DATE__);
+  display.setCursor(0, 54); display.print(fw);
+  display.setCursor(0, 62); display.print(F("[Back] Menu"));
+}
+
+void drawRegister() {
+  if (regStep == REG_INTRO) {
+    // Scrollable, paged instructions instead of one dense static screen -
+    // each page holds one focused idea rather than cramming several onto a
+    // single 128x64 frame. Up/Down move between pages; OK starts the wizard
+    // from whichever page you're on.
+    const uint8_t INTRO_PAGE_COUNT = 4;
+    struct IntroPage { const char* l1; const char* l2; const char* l3; };
+    static const IntroPage introPages[INTRO_PAGE_COUNT] = {
+      { "Clone your indoor",   "unit's remote so this",  "device can control it." },
+      { "You will capture:",   "Power ON, Power OFF,",   "and each temp 17-30C." },
+      { "For each one, aim",   "the remote straight at", "the IR receiver lens." },
+      { "Press OK, THEN press", "the button on your",    "remote right after." },
+    };
+    const IntroPage &p = introPages[regIntroPage];
+
+    display.setCursor(0, 18); display.print(F("REGISTER NEW AC"));
+    display.setCursor(0, 30); display.print(p.l1);
+    display.setCursor(0, 40); display.print(p.l2);
+    display.setCursor(0, 48); display.print(p.l3);
+
+    char pg[12]; snprintf(pg, sizeof(pg), "Pg %d/%d", regIntroPage + 1, INTRO_PAGE_COUNT);
+    display.setCursor(92, 0); display.print(pg);   // small page indicator, top-right corner
+
+    display.setCursor(0, 56); display.print(F("Up/Dn = more info"));
+    display.setCursor(0, 62); display.print(F("OK Start  Back Menu"));
+    return;
+  }
+  if (regStep == REG_DONE) {
+    display.setCursor(0, 18); display.print(F("REGISTRATION DONE"));
+    display.setCursor(0, 32); display.print(F("Skipped codes still"));
+    display.setCursor(0, 40); display.print(F("use safe defaults."));
+    display.setCursor(0, 62); display.print(F("OK Return to menu"));
+    return;
+  }
+
+  const char* lbl = regCapLabel(regStep);
+  uint8_t stepNum = (regStep == REG_CAP_ON) ? 1 : (regStep == REG_CAP_OFF) ? 2 : (3 + regTempIndex);
+  char hdr[20]; snprintf(hdr, sizeof(hdr), "REGISTER (%d/%d)", stepNum, 2 + TEMP_COUNT);
+  display.setCursor(0, 18); display.print(hdr);
+  display.setCursor(0, 27); display.print(lbl);
+
+  if (regPhase == REGP_INSTRUCT) {
+    display.setCursor(0, 38); display.print(F("Press that exact button"));
+    display.setCursor(0, 46); display.print(F("on the indoor unit's"));
+    display.setCursor(0, 54); display.print(F("remote, right after OK."));
+    display.setCursor(0, 62); display.print(F("OK Cap  R Skip  L Prev"));
+  } else if (regPhase == REGP_LISTENING) {
+    uint32_t elapsed = millis() - regListenStart;
+    uint32_t remain  = (elapsed < IR_CAPTURE_TIMEOUT_MS) ? (IR_CAPTURE_TIMEOUT_MS - elapsed) : 0;
+    char l[24];
+    snprintf(l, sizeof(l), "Listening... %lus", (unsigned long)((remain + 999) / 1000));
+    display.setCursor(0, 40); display.print(l);
+    display.setCursor(0, 50); display.print(F("Press the remote NOW"));
+    display.setCursor(0, 62); display.print(F("Back = cancel"));
+  } else if (regPhase == REGP_RESULT) {
+    if (regLastCaptureOK) {
+      display.setCursor(0, 42); display.print(F("Captured and saved!"));
+      display.setCursor(0, 54); display.print(F("OK Test  Left Retry"));
+    } else {
+      display.setCursor(0, 42); display.print(F("No signal - try again"));
+      display.setCursor(0, 54); display.print(F("OK Next  Left Retry"));
+    }
+  } else { // REGP_TESTFIRE
+    display.setCursor(0, 38); display.print(F("Point this device at"));
+    display.setCursor(0, 46); display.print(F("the indoor unit, then"));
+    display.setCursor(0, 54); display.print(F("OK to test-fire it."));
+    display.setCursor(0, 62); display.print(F("R Next  L Recapture"));
+  }
+}
+
+void drawEditDaily() {
+  display.setCursor(0, 18); display.print(F("DAILY SCHEDULE"));
+  char l[24];
+  #define C(f) (editField == (f) ? '>' : ' ')
+  display.setCursor(0, 30);
+  snprintf(l, sizeof(l), "%cStart %02d:%02d %cEnd %02d:%02d", C(F_START_H), sched.startH, sched.startM, C(F_END_H), sched.endH, sched.endM);
+  display.print(l);
+  display.setCursor(0, 40);
+  snprintf(l, sizeof(l), " %c min      %c min", C(F_START_M), C(F_END_M));
+  display.print(l);
+  display.setCursor(0, 52);
+  snprintf(l, sizeof(l), "%cTgt %2dC  %cEn:%s", C(F_TARGET), sched.targetC, C(F_ENABLED), sched.enabled ? "Y" : "N");
+  display.print(l);
+  #undef C
+}
+
+void drawEvent() {
+  display.setCursor(0, 18); display.print(F("ONE-TIME EVENT"));
+  char l[24];
+  #define C(f) (evField == (f) ? '>' : ' ')
+  display.setCursor(0, 30);
+  snprintf(l, sizeof(l), "%cMon%02d %cDay%02d", C(EV_MONTH), otEvent.month, C(EV_DAY), otEvent.day);
+  display.print(l);
+  display.setCursor(0, 40);
+  snprintf(l, sizeof(l), "%cHr%02d  %cMin%02d", C(EV_HOUR), otEvent.hour, C(EV_MIN), otEvent.minute);
+  display.print(l);
+  display.setCursor(0, 50);
+  snprintf(l, sizeof(l), "%cTgt%2d %cOff%d %cArm%c", C(EV_TARGET), otEvent.targetC, C(EV_OFF), otEvent.offHours, C(EV_ARMED), otEvent.enabled ? 'Y' : 'N');
+  display.print(l);
+  #undef C
+}
+
+void drawSetClock() {
+  display.setCursor(0, 18); display.print(F("SET CLOCK"));
+  char l[24];
+  #define C(f) (scField == (f) ? '>' : ' ')
+  display.setCursor(0, 30);
+  snprintf(l, sizeof(l), "%cYr%04d %cMon%02d", C(SC_YEAR), clk.year, C(SC_MONTH), clk.month);
+  display.print(l);
+  display.setCursor(0, 40);
+  snprintf(l, sizeof(l), "%cDay%02d", C(SC_DAY), clk.day);
+  display.print(l);
+  display.setCursor(0, 50);
+  snprintf(l, sizeof(l), "%cHr%02d  %cMin%02d", C(SC_HOUR), clk.hour, C(SC_MIN), clk.minute);
+  display.print(l);
+  #undef C
+}
+
+void updateDisplay(const DateTime &now) {
+  if (millis() - lastDisplay < DISPLAY_INTERVAL) return;
+  lastDisplay = millis();
+  display.clearDisplay();
+  drawTopBar(now);
+  switch (currentScreen) {
+    case SCREEN_DASHBOARD: drawDashboard(now); break;
+    case SCREEN_MENU:      drawMenu(); break;
+    case SCREEN_EDIT:      drawEditDaily(); break;
+    case SCREEN_EVENT:     drawEvent(); break;
+    case SCREEN_SETCLOCK:  drawSetClock(); break;
+    case SCREEN_NETINFO:   drawNetInfo(); break;
+    case SCREEN_REGISTER:  drawRegister(); break;
+    case SCREEN_REMOTE:    drawOfflineRemote(); break;
+  }
+  display.display();
+}
+
+
+/* #############################################################################
+   ##########################   WIFI + WEB SERVER   ###########################
+   ############################################################################# */
+#ifdef ENABLE_WIFI
+const char PAGE_HTML[] PROGMEM = R"HTML(
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Smart Climate AC</title>
+<style>
+  :root{--bg:#0f1419;--card:#1b2430;--acc:#2dd4bf;--txt:#e6edf3;--mut:#8b98a5;}
+  *{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;}
+  body{margin:0;background:var(--bg);color:var(--txt);padding:16px;max-width:360px;margin:auto;}
+  .sc-h1{font-size:18px;font-weight:500;text-align:center;margin:2px 0 14px;}
+  .sc-card{background:var(--card);border-radius:14px;padding:14px;margin-bottom:12px;}
+  .sc-card.ev{border:1px solid var(--acc);}
+  .sc-row{display:flex;justify-content:space-between;align-items:center;margin:8px 0;font-size:13px;color:var(--mut);}
+  .sc-toprow{display:flex;justify-content:space-between;font-size:12px;color:var(--mut);}
+  .sc-big{font-size:38px;font-weight:500;line-height:1;}
+  .sc-lbl{font-size:12px;color:var(--mut);}
+  .sc-badge{padding:4px 14px;border-radius:20px;font-weight:500;font-size:13px;}
+  .sc-mode{font-size:12px;color:var(--mut);margin-top:6px;}
+  .sc-primary{border:0;border-radius:10px;padding:12px;font-size:15px;font-weight:500;color:#0f1419;background:var(--acc);cursor:pointer;flex:1;}
+  .sc-sec{border:0;border-radius:10px;padding:12px;font-size:14px;color:var(--txt);background:#374151;cursor:pointer;flex:1;}
+  .sc-presets{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;}
+  .sc-tbtn{background:#243244;color:var(--txt);border:0;border-radius:10px;padding:11px 0;font-size:14px;cursor:pointer;transition:background .15s;}
+  .sc-tbtn.sel{background:var(--acc);color:#0f1419;font-weight:500;}
+  .sc-in{width:44px;padding:7px;border-radius:8px;border:1px solid #374151;background:#0f1419;color:var(--txt);font-size:14px;text-align:center;}
+  .sc-dt{flex:1;margin-left:10px;padding:7px;border-radius:8px;border:1px solid #374151;background:#0f1419;color:var(--txt);font-size:13px;}
+  .sc-flex{display:flex;gap:8px;}
+  .sc-foot{font-size:11px;color:var(--mut);text-align:center;margin-top:12px;}
+</style></head><body>
+<div class="sc-h1">&#10052; Smart Climate AC</div>
+
+<div class="sc-card">
+  <div class="sc-toprow"><span id="sc-clock">--:--:--</span><span id="sc-date">--/--/----</span></div>
+  <div class="sc-row" style="align-items:flex-end;margin:12px 0 10px">
+    <div><div class="sc-big" id="sc-temp">--&deg;</div><div class="sc-lbl">Room temperature</div></div>
+    <div style="text-align:right"><div class="sc-big" id="sc-hum">--%</div><div class="sc-lbl">Humidity</div></div>
+  </div>
+  <div class="sc-row"><span style="font-size:14px;color:var(--txt)">AC status</span><span class="sc-badge" id="sc-badge">OFF</span></div>
+  <div class="sc-row" style="font-size:14px;color:var(--txt)"><span>AC set to</span><span id="sc-set">--&deg;C</span></div>
+  <div class="sc-mode" id="sc-mode">Mode: --</div>
+</div>
+
+<div class="sc-card">
+  <div class="sc-flex"><button class="sc-primary" onclick="scOn()">Turn on</button><button class="sc-sec" onclick="scOff()">Turn off</button></div>
+  <div class="sc-lbl" style="margin:14px 0 8px">Set temperature</div>
+  <div class="sc-presets" id="sc-presets">
+    <button class="sc-tbtn" data-t="18" onclick="scSet(18)">18&deg;C</button>
+    <button class="sc-tbtn" data-t="20" onclick="scSet(20)">20&deg;C</button>
+    <button class="sc-tbtn" data-t="21" onclick="scSet(21)">21&deg;C</button>
+    <button class="sc-tbtn" data-t="22" onclick="scSet(22)">22&deg;C</button>
+    <button class="sc-tbtn" data-t="24" onclick="scSet(24)">24&deg;C</button>
+    <button class="sc-tbtn" data-t="25" onclick="scSet(25)">25&deg;C</button>
+  </div>
+  <button class="sc-sec" style="width:100%;margin-top:10px" onclick="scResume()">Resume schedule</button>
+</div>
+
+<div class="sc-card">
+  <div class="sc-lbl" style="margin-bottom:10px">Daily schedule</div>
+  <div class="sc-row"><span>Start</span><div><input class="sc-in" id="sc-sh" type="number" min="0" max="23">:<input class="sc-in" id="sc-sm" type="number" min="0" max="59"></div></div>
+  <div class="sc-row"><span>End</span><div><input class="sc-in" id="sc-eh" type="number" min="0" max="23">:<input class="sc-in" id="sc-em" type="number" min="0" max="59"></div></div>
+  <div class="sc-row"><span>Target &deg;C</span><input class="sc-in" id="sc-tgt" type="number" min="17" max="30"></div>
+  <div class="sc-row" style="margin-bottom:12px"><span>Enabled</span><input id="sc-en" type="checkbox" style="width:18px;height:18px;accent-color:var(--acc)"></div>
+  <button class="sc-primary" style="width:100%" onclick="scSaveSchedule()">Save schedule</button>
+</div>
+
+<div class="sc-card ev">
+  <div class="sc-lbl" style="color:var(--acc);margin-bottom:10px">One-time event (date + time)</div>
+  <div class="sc-row"><span>When</span><input id="ev-dt" class="sc-dt" type="datetime-local"></div>
+  <div class="sc-row"><span>Target &deg;C</span><input id="ev-t" class="sc-in" type="number" min="17" max="30" value="22"></div>
+  <div class="sc-row"><span>Auto-off after (hrs)</span><input id="ev-off" class="sc-in" type="number" min="0" max="24" value="3"></div>
+  <div class="sc-row"><span>Armed</span><input id="ev-en" type="checkbox" style="width:18px;height:18px;accent-color:var(--acc)"></div>
+  <div class="sc-lbl" id="ev-status" style="margin:4px 0 12px">No event armed</div>
+  <button class="sc-primary" style="width:100%" onclick="scSaveEvent()">Save one-time event</button>
+</div>
+
+<div class="sc-foot">ESP32 offline scheduler &bull; live updates every 1.5 s</div>
+
+<script>
+let editing=false;
+function $(id){return document.getElementById(id);}
+function scBadge(s){
+  const b=$('sc-badge');
+  if(s.emergency){b.textContent='EMERGENCY';b.style.background='#7f1d1d';b.style.color='#fff';}
+  else if(s.acOn){b.textContent='ON';b.style.background='#134e4a';b.style.color='#2dd4bf';}
+  else{b.textContent='OFF';b.style.background='#3a2020';b.style.color='#f87171';}
+  document.querySelectorAll('#sc-presets .sc-tbtn').forEach(el=>{
+    el.classList.toggle('sel', s.acOn && +el.dataset.t===s.setTemp);
+  });
+}
+async function poll(){
+  try{
+    const r=await fetch('/status'); const s=await r.json();
+    $('sc-clock').textContent=s.time; $('sc-date').textContent=s.date;
+    $('sc-temp').innerHTML=(s.valid?s.temp.toFixed(0):'--')+'&deg;';
+    $('sc-hum').textContent=(s.valid?s.hum.toFixed(0):'--')+'%';
+    $('sc-set').innerHTML=(s.acOn?s.setTemp+'&deg;C':'--');
+    scBadge(s);
+    $('sc-mode').textContent=s.emergency?'Mode: EMERGENCY (40C+)':s.manual?'Mode: Manual':(s.schedEn?'Mode: Schedule':'Mode: Schedule off');
+    $('ev-status').textContent=s.evEn?(s.evFired?'Fired - AC running':'Armed: '+s.evStr+' -> '+s.evTemp+'C'+(s.evOff?', off after '+s.evOff+'h':'')):'No event armed';
+    if(!editing){
+      $('sc-sh').value=s.sh; $('sc-sm').value=s.sm; $('sc-eh').value=s.eh; $('sc-em').value=s.em;
+      $('sc-tgt').value=s.targetTemp; $('sc-en').checked=s.schedEn;
+    }
+  }catch(e){}
+}
+['sc-sh','sc-sm','sc-eh','sc-em','sc-tgt','sc-en','ev-dt','ev-t','ev-off','ev-en'].forEach(id=>{
+  const el=$(id); el.addEventListener('focus',()=>editing=true);
+  el.addEventListener('blur',()=>setTimeout(()=>editing=false,3000));
+});
+function scOn(){fetch('/cmd?action=on').then(poll);}
+function scOff(){fetch('/cmd?action=off').then(poll);}
+function scSet(c){fetch('/settemp?c='+c).then(poll);}
+function scResume(){fetch('/resume').then(poll);}
+function scSaveSchedule(){
+  const q='sh='+$('sc-sh').value+'&sm='+$('sc-sm').value+'&eh='+$('sc-eh').value+'&em='+$('sc-em').value+'&tgt='+$('sc-tgt').value+'&en='+($('sc-en').checked?1:0);
+  fetch('/schedule?'+q).then(()=>{editing=false;poll();});
+}
+function scSaveEvent(){
+  const v=$('ev-dt').value;
+  if(!v){alert('Pick a date and time first');return;}
+  const [d,t]=v.split('T'); const [y,mo,da]=d.split('-'); const [h,mi]=t.split(':');
+  const q='en='+($('ev-en').checked?1:0)+'&y='+y+'&mo='+(+mo)+'&d='+(+da)+'&h='+(+h)+'&mi='+(+mi)+'&t='+$('ev-t').value+'&off='+$('ev-off').value;
+  fetch('/event?'+q).then(()=>{editing=false;poll();});
+}
+poll(); setInterval(poll,1500);
+</script>
+</body></html>
+)HTML";
+
+void handleRoot() { server.send_P(200, "text/html", PAGE_HTML); }
+
+void handleStatus() {
+  DateTime now = rtc.now();
+  char buf[512], evstr[24];
+  uint8_t h12 = now.hour() % 12; if (h12 == 0) h12 = 12;
+  const char* ampm = (now.hour() < 12) ? "AM" : "PM";
+  uint8_t evH12 = otEvent.hour % 12; if (evH12 == 0) evH12 = 12;
+  const char* evAmpm = (otEvent.hour < 12) ? "AM" : "PM";
+  if (otEvent.enabled) snprintf(evstr, sizeof(evstr), "%02d/%02d/%04d %02d:%02d %s",
+                                otEvent.day, otEvent.month, otEvent.year, evH12, otEvent.minute, evAmpm);
+  else                 snprintf(evstr, sizeof(evstr), "none");
+  snprintf(buf, sizeof(buf),
+    "{\"time\":\"%02d:%02d:%02d %s\",\"date\":\"%02d/%02d/%04d\",\"temp\":%.1f,\"hum\":%.1f,\"valid\":%s,"
+    "\"acOn\":%s,\"setTemp\":%d,\"targetTemp\":%d,\"sh\":%d,\"sm\":%d,\"eh\":%d,\"em\":%d,\"schedEn\":%s,"
+    "\"manual\":%s,\"emergency\":%s,\"evEn\":%s,\"evStr\":\"%s\",\"evTemp\":%d,\"evOff\":%d,\"evFired\":%s}",
+    h12, now.minute(), now.second(), ampm, now.day(), now.month(), now.year(),
+    roomTempC, roomHum, dhtValid ? "true" : "false",
+    acOn ? "true" : "false", acSetTemp, sched.targetC,
+    sched.startH, sched.startM, sched.endH, sched.endM, sched.enabled ? "true" : "false",
+    manualOverride ? "true" : "false", emergencyActive ? "true" : "false",
+    otEvent.enabled ? "true" : "false", evstr, otEvent.targetC,
+    otEvent.autoOff ? otEvent.offHours : 0, otEvent.fired ? "true" : "false");
+  server.send(200, "application/json", buf);
+}
+
+void handleCmd() {
+  String a = server.arg("action");
+  manualOverride  = true;
+  emergencyActive = false;   // manual takeover from the webpage wins over everything
+  if (a == "on")  acPowerOn(acSetTemp);
+  if (a == "off") acPowerOff();
+  server.send(200, "text/plain", "OK");
+}
+void handleSetTemp() {
+  int c = server.arg("c").toInt(); if (c<TEMP_MIN) c=TEMP_MIN; if (c>TEMP_MAX) c=TEMP_MAX;
+  manualOverride  = true;
+  emergencyActive = false;   // manual takeover from the webpage wins over everything
+  if (!acOn) acPowerOn((uint8_t)c); else applyACTemp((uint8_t)c);
+  server.send(200, "text/plain", "OK");
+}
+void handleSchedule() {
+  if (server.hasArg("sh"))  sched.startH  = constrain(server.arg("sh").toInt(),  0, 23);
+  if (server.hasArg("sm"))  sched.startM  = constrain(server.arg("sm").toInt(),  0, 59);
+  if (server.hasArg("eh"))  sched.endH    = constrain(server.arg("eh").toInt(),  0, 23);
+  if (server.hasArg("em"))  sched.endM    = constrain(server.arg("em").toInt(),  0, 59);
+  if (server.hasArg("tgt")) sched.targetC = constrain(server.arg("tgt").toInt(), TEMP_MIN, TEMP_MAX);
+  if (server.hasArg("en"))  sched.enabled = (server.arg("en").toInt() == 1);
+  manualOverride = false;   // saving a schedule hands control back to it
+  saveSettings();
+  server.send(200, "text/plain", "OK");
+}
+void handleEvent() {
+  if (server.hasArg("en")) otEvent.enabled = (server.arg("en").toInt() == 1);
+  if (server.hasArg("y"))  otEvent.year    = server.arg("y").toInt();
+  if (server.hasArg("mo")) otEvent.month   = constrain(server.arg("mo").toInt(), 1, 12);
+  if (server.hasArg("d"))  otEvent.day     = constrain(server.arg("d").toInt(), 1, 31);
+  if (server.hasArg("h"))  otEvent.hour    = constrain(server.arg("h").toInt(), 0, 23);
+  if (server.hasArg("mi")) otEvent.minute  = constrain(server.arg("mi").toInt(), 0, 59);
+  if (server.hasArg("t"))  otEvent.targetC = constrain(server.arg("t").toInt(), TEMP_MIN, TEMP_MAX);
+  if (server.hasArg("off")) { int o = server.arg("off").toInt(); otEvent.autoOff = (o > 0); otEvent.offHours = constrain(o, 0, 24); }
+  otEvent.fired = false; otEvent.offFired = false;
+  manualOverride = false;   // arming a fresh event hands control back to it
+  saveSettings();
+  server.send(200, "text/plain", "OK");
+}
+void handleResume() { manualOverride = false; server.send(200, "text/plain", "OK"); }
+void handleNotFound() { server.send(404, "text/plain", "Not found"); }
+
+void syncTimeNTP() {
+#if ENABLE_NTP
+  configTime(NTP_GMT_OFFSET, NTP_DST_OFFSET, "pool.ntp.org", "time.nist.gov");
+  struct tm ti;
+  if (getLocalTime(&ti, 8000)) {
+    rtc.adjust(DateTime(ti.tm_year + 1900, ti.tm_mon + 1, ti.tm_mday, ti.tm_hour, ti.tm_min, ti.tm_sec));
+    Serial.println(F("RTC synced from NTP."));
+  }
+#endif
+}
+void setupWiFi() {
+  WiFiManager wm;
+  wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);   // don't hang setup() forever if nobody's there to configure it
+  bool ok = wm.autoConnect(AP_SSID, AP_PASS);
+  if (ok) {
+    wifiConnected = true; apMode = false; ipStr = WiFi.localIP().toString();
+
+    // Some routers/ISPs hand out DNS that fails to resolve api.github.com
+    // reliably (seen as "DNS Failed for api.github.com" during OTA). Force
+    // Google Public DNS once we have our own IP/gateway/subnet from DHCP.
+    IPAddress primaryDNS(8, 8, 8, 8);
+    IPAddress secondaryDNS(8, 8, 4, 4);
+    WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(), primaryDNS, secondaryDNS);
+
+    // TLS certificate validation (used for the GitHub OTA HTTPS connections)
+    // checks certificate validity windows against the system clock. If NTP
+    // hasn't synced yet, the clock sits at Jan 1 1970 and cert checks can
+    // fail. syncTimeNTP() below does the RTC-facing sync; this blocks
+    // specifically until system time itself is sane before we continue.
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    Serial.print(F("[SYS] Syncing NTP time..."));
+    time_t nowEpoch = time(nullptr);
+    uint8_t ntpAttempts = 0;
+    while (nowEpoch < 86400 && ntpAttempts < 40) {   // ~20s cap - don't hang boot forever if NTP is unreachable
+      delay(500);
+      Serial.print(F("."));
+      nowEpoch = time(nullptr);
+      ntpAttempts++;
+    }
+    Serial.println(nowEpoch < 86400 ? F(" timed out, continuing anyway.") : F(" synchronized!"));
+
+    syncTimeNTP();
+  } else {
+    // Portal timed out with no one configuring it. Don't block boot forever -
+    // proceed offline; the daily schedule/emergency logic all work without
+    // WiFi anyway. loop() will keep retrying WiFi in the background.
+    wifiConnected = false; apMode = false; ipStr = "";
+    Serial.println(F("WiFiManager: no connection yet - continuing offline, will retry."));
+  }
+}
+void startWebServer() {
+  server.on("/", handleRoot);
+  server.on("/status", handleStatus);
+  server.on("/cmd", handleCmd);
+  server.on("/settemp", handleSetTemp);
+  server.on("/schedule", handleSchedule);
+  server.on("/event", handleEvent);
+  server.on("/resume", handleResume);
+  server.onNotFound(handleNotFound);
+  server.begin();
+}
+
+/* =============================================================================
+   MQTT (remote manual control via the Lovable webpage, worldwide)
+   -----------------------------------------------------------------------------
+   This runs ALONGSIDE the existing local WebServer, not instead of it - the
+   local dashboard still works on your home network even if the internet/MQTT
+   link is down; this just adds a second, internet-reachable control path.
+   Every MQTT command sets manualOverride the same way the local webpage and
+   the on-device offline remote already do, so there's one consistent
+   "manual wins over everything" rule no matter which interface issued it.
+   ============================================================================= */
+WiFiClientSecure mqttSecureClient;
+PubSubClient     mqttClient(mqttSecureClient);
+uint32_t lastMqttAttempt   = 0;
+uint32_t lastStatusPublish = 0;
+uint32_t lastWifiRetry     = 0;
+const uint32_t WIFI_RETRY_MS = 10000UL;
+
+// Second, fully independent MQTT client for the OTA deployment channel -
+// its own WiFiClient (plain, not the shared secure one), its own
+// PubSubClient, its own retry timer. Nothing here touches mqttClient or
+// mqttSecureClient above, by design, so a problem on one broker can never
+// stall the other. Entirely compiled out unless ENABLE_OTA is defined -
+// see the OTA MQTT CONFIG comment near the top for why that matters.
+#ifdef ENABLE_OTA
+WiFiClientSecure otaSecureClient;
+PubSubClient     otaMqttClient(otaSecureClient);
+uint32_t     lastOtaAttempt = 0;
+#endif
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String msg; msg.reserve(length);
+  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+  String t = String(topic);
+
+  StaticJsonDocument<256> doc;
+  DeserializationError jerr = deserializeJson(doc, msg);
+  if (jerr) { Serial.print(F("[MQTT] JSON parse error: ")); Serial.println(jerr.c_str()); return; }
+
+  if (t == MQTT_TOPIC_CMD) {
+    // resume_schedule takes priority and is handled alone - a payload that
+    // sets it true is a "hand control back" command, not also a power/temp
+    // change in the same breath.
+    if (doc.containsKey("resume_schedule") && doc["resume_schedule"] == true) {
+      manualOverride = false;
+      Serial.println(F("[MQTT] Resume schedule."));
+      return;
+    }
+    manualOverride  = true;
+    emergencyActive = false;   // manual command from the webpage wins over everything, same rule as local control
+    if (doc.containsKey("power")) {
+      bool p = doc["power"];
+      if (p) acPowerOn(acSetTemp); else acPowerOff();
+    }
+    if (doc.containsKey("temp")) {
+      int tgt = constrain((int)doc["temp"], TEMP_MIN, TEMP_MAX);
+      if (!acOn) acPowerOn((uint8_t)tgt); else applyACTemp((uint8_t)tgt);
+    }
+  }
+  else if (t == MQTT_TOPIC_SCHED) {
+    if (doc.containsKey("sh"))  sched.startH  = constrain((int)doc["sh"],  0, 23);
+    if (doc.containsKey("sm"))  sched.startM  = constrain((int)doc["sm"],  0, 59);
+    if (doc.containsKey("eh"))  sched.endH    = constrain((int)doc["eh"],  0, 23);
+    if (doc.containsKey("em"))  sched.endM    = constrain((int)doc["em"],  0, 59);
+    if (doc.containsKey("tgt")) sched.targetC = constrain((int)doc["tgt"], TEMP_MIN, TEMP_MAX);
+    if (doc.containsKey("en"))  sched.enabled = doc["en"];
+    manualOverride = false;   // saving a schedule hands control back to it - matches every other interface
+    saveSettings();
+    Serial.println(F("[MQTT] Schedule updated from webpage."));
+  }
+  else if (t == MQTT_TOPIC_EVENT) {
+    // Was entirely missing before - Lovable had nothing to publish to for
+    // one-time events, so armed events from the webpage silently never
+    // took effect no matter how correctly the frontend sent them.
+    if (doc.containsKey("en")) otEvent.enabled = doc["en"];
+    if (doc.containsKey("y"))  otEvent.year    = doc["y"];
+    if (doc.containsKey("mo")) otEvent.month   = constrain((int)doc["mo"], 1, 12);
+    if (doc.containsKey("d"))  otEvent.day     = constrain((int)doc["d"],  1, 31);
+    if (doc.containsKey("h"))  otEvent.hour    = constrain((int)doc["h"],  0, 23);
+    if (doc.containsKey("mi")) otEvent.minute  = constrain((int)doc["mi"], 0, 59);
+    if (doc.containsKey("t"))  otEvent.targetC = constrain((int)doc["t"],  TEMP_MIN, TEMP_MAX);
+    if (doc.containsKey("off")) { int o = (int)doc["off"]; otEvent.autoOff = (o > 0); otEvent.offHours = constrain(o, 0, 24); }
+    otEvent.fired = false; otEvent.offFired = false;
+    manualOverride = false;   // arming a fresh event hands control back to it
+    saveSettings();
+    Serial.println(F("[MQTT] One-time event armed from webpage."));
+  }
+}
+
+void connectMQTT() {
+  Serial.print(F("[MQTT] Connecting... "));
+  mqttSecureClient.setInsecure();   // encrypted transport, not certificate-pinned - matches the kill-switch device's approach
+  if (mqttClient.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASS)) {
+    Serial.println(F("connected."));
+    mqttClient.subscribe(MQTT_TOPIC_CMD);
+    mqttClient.subscribe(MQTT_TOPIC_SCHED);
+    mqttClient.subscribe(MQTT_TOPIC_EVENT);
+  } else {
+    Serial.print(F("failed, rc=")); Serial.println(mqttClient.state());
+  }
+}
+
+void publishMqttStatus() {
+  StaticJsonDocument<256> doc;
+  doc["temp"]    = dhtValid ? roomTempC : -1.0;
+  doc["hum"]     = dhtValid ? roomHum   : -1.0;
+  doc["acOn"]    = acOn;
+  doc["setTemp"] = acSetTemp;
+  doc["mode"]    = emergencyActive ? "emergency" : (manualOverride ? "manual" : (sched.enabled ? "schedule" : "schedule_off"));
+  char buf[256];
+  size_t n = serializeJson(doc, buf, sizeof(buf));
+  mqttClient.publish(MQTT_TOPIC_STATUS, buf, n);
+}
+
+/* =============================================================================
+   OTA DEPLOYMENT CHANNEL (second, independent broker)
+   ============================================================================= */
+#ifdef ENABLE_OTA
+void showCenteredText(const char* line1, const char* line2);   // defined further down, near the boot self-test
+
+// Deliberate, rare event - a short blocking hold is fine here, same
+// philosophy as the boot chime/self-test elsewhere in this file.
+void showOtaMessage(const char* line1, const char* line2, uint32_t holdMs) {
+  showCenteredText(line1, line2);
+  delay(holdMs);
+}
+
+/* -----------------------------------------------------------------------
+   Manual OTA download+flash for a PRIVATE GitHub Release Asset.
+   -----------------------------------------------------------------------
+   Uses HTTPClient directly (not the httpUpdate.update() convenience
+   wrapper) specifically so we can attach the headers GitHub's private
+   asset API requires:
+     Authorization: token <PAT>           - proves we're allowed to read it
+     Accept: application/octet-stream     - asks for the raw binary, not
+                                             the asset's JSON metadata
+     X-GitHub-Api-Version                 - current GitHub REST API practice
+     User-Agent                           - GitHub's API rejects requests
+                                             with none at all
+
+   GitHub responds to a valid request with a 302 to a short-lived, presigned
+   AWS S3 URL. This is now handled as TWO EXPLICIT requests rather than
+   relying on setFollowRedirects() - some ESP32 core versions forward ALL
+   headers (including Authorization) to the redirected S3 request, and S3
+   can reject a presigned-URL request that also carries an unexpected
+   Authorization header. Doing this manually removes that ambiguity
+   entirely: the second request to S3 deliberately does NOT send
+   Authorization at all.
+
+   A plain 404 on the FIRST request (before any redirect) almost always
+   means the PAT lacks access to this specific private repo/asset - GitHub
+   deliberately returns 404 rather than 403 for private-resource access
+   problems, so it doesn't reveal whether the resource exists at all to
+   someone without permission. Check the PAT's repo scope and "Contents:
+   Read" permission before suspecting the code.
+   ----------------------------------------------------------------------- */
+bool performGithubOTA(const String &assetUrl, const String &githubPat) {
+  if (githubPat.length() == 0) {
+    Serial.println(F("[OTA Error] GitHub PAT is empty! Check NVS/Config."));
+    return false;
+  }
+
+  // Pre-flight DNS check for api.github.com. This doesn't change how http.begin()
+  // resolves the host itself - it's purely a diagnostic so a DNS failure shows up
+  // clearly in the log instead of just a bare "-1" HTTP status further down.
+  IPAddress resolvedIP;
+  if (WiFi.hostByName("api.github.com", resolvedIP)) {
+    Serial.print(F("[OTA] api.github.com resolved to: ")); Serial.println(resolvedIP);
+  } else {
+    Serial.println(F("[OTA] DNS resolution for api.github.com failed - check network/DNS before retrying."));
+  }
+
+  HTTPClient http;
+  http.begin(otaSecureClient, assetUrl);
+  String token = githubPat;
+  token.replace("\"", "");
+  token.replace("\r", "");
+  token.replace("\n", "");
+  token.trim();
+  Serial.printf("[OTA Debug] Token Length: %d (Classic PATs are 40 chars)\n", token.length());
+
+  // Toggle this to test "token " vs "Bearer " against your PAT/endpoint.
+  // Only one scheme is ever sent - GitHub (and HTTP generally) rejects
+  // requests carrying two Authorization header values, so this must stay
+  // a single conditional, not two addHeader() calls.
+  const bool USE_CLASSIC_TOKEN_SCHEME = false;
+  String scheme = USE_CLASSIC_TOKEN_SCHEME ? "token " : "Bearer ";
+  String authHeader = scheme + token;
+  authHeader.trim();
+
+  String masked = token.length() >= 4 ? token.substring(0, 4) + "****************" : "****************";
+  Serial.printf("[OTA Debug] Header sent: Authorization: %s%s\n", scheme.c_str(), masked.c_str());
+  http.addHeader("Authorization", authHeader);
+  if (assetUrl.indexOf("/contents/") != -1) {
+    http.addHeader("Accept", "application/vnd.github.raw");
+  } else {
+    http.addHeader("Accept", "application/octet-stream");
+  }
+  http.addHeader("X-GitHub-Api-Version", "2022-11-28");
+  http.addHeader("User-Agent", "ESP32-AC-Scheduler-OTA");
+  http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);   // we handle the redirect ourselves below
+  http.setTimeout(15000);
+
+  const char* headerKeys[] = {"Location"};
+  http.collectHeaders(headerKeys, 1);
+
+  int httpCode = http.GET();
+  Serial.printf("[OTA Log 1] GitHub API Status Code: %d\n", httpCode);
+
+  HTTPClient http2;
+  HTTPClient *dl = &http;   // points at whichever client ends up holding the actual file stream
+
+  if (httpCode == 301 || httpCode == 302 || httpCode == 303 || httpCode == 307 || httpCode == 308) {
+    String redirectUrl = http.header("Location");
+    http.end();
+    if (redirectUrl.length() == 0) {
+      Serial.println(F("[OTA] Redirect response had no Location header."));
+      return false;
+    }
+    Serial.print(F("[OTA] Following redirect to storage: ")); Serial.println(redirectUrl);
+
+    // Deliberately no Authorization/Accept/etc here - S3 presigned URLs
+    // carry their own auth in the query string, and forwarding GitHub's
+    // token here is exactly the failure mode this rewrite avoids.
+    http2.begin(otaSecureClient, redirectUrl);
+    http2.setTimeout(15000);
+    int httpCode2 = http2.GET();
+    Serial.printf("[OTA Log 2] S3 Bucket Status Code: %d\n", httpCode2);
+    if (httpCode2 != HTTP_CODE_OK) {
+      Serial.printf("[OTA] Download from redirect target failed - HTTP %d.\n", httpCode2);
+      http2.end();
+      return false;
+    }
+    dl = &http2;
+  }
+  else if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("[OTA] GitHub request failed - HTTP %d.\n", httpCode);
+    if (httpCode == 404) {
+      Serial.println(F("[OTA] A 404 here usually means the PAT lacks access to this private repo/asset, not that the URL is wrong."));
+    }
+    http.end();
+    return false;
+  }
+  // else: httpCode was 200 directly from GitHub with no redirect - dl still points at http, handled below.
+
+  int contentLength = dl->getSize();
+  if (contentLength <= 0) {
+    Serial.println(F("[OTA] Response had no usable content length."));
+    dl->end();
+    return false;
+  }
+
+  if (!Update.begin(contentLength)) {
+    Serial.printf("[OTA] Update.begin() failed: %s\n", Update.errorString());
+    dl->end();
+    return false;
+  }
+
+  WiFiClient *stream = dl->getStreamPtr();
+  size_t written = Update.writeStream(*stream);
+  if (written != (size_t)contentLength) {
+    Serial.printf("[OTA] Incomplete write: %u of %d bytes.\n", (unsigned)written, contentLength);
+    dl->end();
+    return false;
+  }
+
+  if (!Update.end() || !Update.isFinished()) {
+    Serial.printf("[OTA] Update.end() failed: %s\n", Update.errorString());
+    dl->end();
+    return false;
+  }
+
+  dl->end();
+  return true;
+}
+
+void otaMqttCallback(char* topic, byte* payload, unsigned int length) {
+  String msg; msg.reserve(length);
+  for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
+
+  StaticJsonDocument<256> doc;
+  DeserializationError jerr = deserializeJson(doc, msg);
+  if (jerr) { Serial.print(F("[OTA] JSON parse error: ")); Serial.println(jerr.c_str()); return; }
+
+  // No local secret check anymore - "token" IS the GitHub PAT, passed
+  // straight through to authorize the download. The OTA broker's own
+  // username/password login is the only remaining gate on this whole path.
+  const char* tokenField = doc["token"] | "";
+  const char* url = doc["url"] | "";
+  if (strlen(url) == 0) {
+    Serial.println(F("[OTA] Rejected: no url field in payload."));
+    showOtaMessage("OTA REJECTED", "Missing url field", 3000);
+    return;
+  }
+  String binaryUrl = String(url);
+  String githubPat = String(tokenField);
+
+  // Dry-run mode: confirms the url/payload parsing works WITHOUT ever
+  // touching the download - no request sent, no flash, no reboot, no
+  // disconnect. Add "test": true to the payload to use this.
+  bool dryRun = doc["test"] | false;
+  if (dryRun) {
+    Serial.print(F("[OTA] TEST OK - url = ")); Serial.println(binaryUrl);
+    Serial.println(F("[OTA] Dry run only - nothing was flashed, no reboot."));
+    showOtaMessage("OTA TEST OK!", "Trigger verified", 3000);
+    return;
+  }
+
+  Serial.print(F("[OTA] Update requested: ")); Serial.println(binaryUrl);
+  showOtaMessage("OTA UPDATING", "Do not power off!", 1500);
+
+  // Audible heads-up that a firmware update is starting.
+  for (uint8_t i = 0; i < 4; i++) {
+    digitalWrite(PIN_BUZZER, HIGH); delay(150);
+    digitalWrite(PIN_BUZZER, LOW);  delay(150);
+  }
+
+  Serial.println(F("[OTA] Disconnecting both MQTT clients to free sockets/RAM before the download..."));
+  mqttClient.disconnect();
+  otaMqttClient.disconnect();
+
+  // Manual download+flash (not the httpUpdate.update() helper) because we
+  // need custom headers for GitHub's private Release Asset API: a Bearer
+  // token, and an Accept header requesting the raw binary instead of the
+  // asset's JSON metadata. See performGithubOTA() above for the actual
+  // request/flash logic and a known S3-redirect gotcha worth reading.
+  bool ok = performGithubOTA(binaryUrl, githubPat);
+  if (ok) {
+    Serial.println(F("[OTA] Flash write verified - rebooting now."));
+    showOtaMessage("OTA SUCCESS", "Rebooting...", 1500);
+    ESP.restart();   // httpUpdate.update() used to do this automatically; the manual path needs it explicit
+  } else {
+    showOtaMessage("OTA FAILED", "Check Serial log", 3000);
+  }
+}
+
+void connectOtaMQTT() {
+  Serial.print(F("[OTA] Connecting to deployment broker... "));
+  otaSecureClient.setInsecure();   // encrypted transport, not certificate-pinned - same approach as the primary broker
+  if (otaMqttClient.connect(OTA_CLIENT_ID, OTA_MQTT_USER, OTA_MQTT_PASS)) {
+    Serial.println(F("connected."));
+    otaMqttClient.subscribe(OTA_MQTT_TOPIC);
+  } else {
+    Serial.print(F("failed, rc=")); Serial.println(otaMqttClient.state());
+  }
+}
+#endif
+
+/* Called every loop() pass. Entirely non-blocking: gated by millis() timers,
+   never calls delay() or otherwise stalls the rest of the firmware - the
+   40C emergency check, schedule, buttons, and display all keep running
+   even while WiFi/MQTT are down or mid-retry, exactly as required for a
+   3+ week unattended deployment on a cellular link that can drop for
+   10 minutes at a time.
+
+   Both brokers are serviced independently below - deliberately NOT as an
+   if/return chain, since an early return on the primary broker's state
+   would have starved the OTA broker of ever being serviced at all while
+   the primary was reconnecting. WiFi itself is the one shared prerequisite
+   both genuinely depend on, so that check alone is shared; everything
+   after it runs for each broker regardless of the other's state. */
+void serviceMQTT() {
+  uint32_t now = millis();
+
+  // Cellular backhaul can drop while the local WiFi link to the LTE router
+  // stays "connected" - so WiFi.status() alone isn't enough; each broker's
+  // own connected() state (checked below) is the real signal for that one.
+  if (WiFi.status() != WL_CONNECTED) {
+    if (now - lastWifiRetry >= WIFI_RETRY_MS) { lastWifiRetry = now; WiFi.reconnect(); }
+    return;   // neither broker can do anything without WiFi at all - this one shared gate is legitimate
+  }
+
+  // --- Primary AC-control broker ---
+  if (!mqttClient.connected()) {
+    if (now - lastMqttAttempt >= MQTT_RETRY_MS) { lastMqttAttempt = now; connectMQTT(); }
+  } else {
+    mqttClient.loop();
+    if (now - lastStatusPublish >= MQTT_PUBLISH_INTERVAL_MS) { lastStatusPublish = now; publishMqttStatus(); }
+  }
+
+  // --- Secondary OTA deployment broker - fully independent of the above ---
+  #ifdef ENABLE_OTA
+  if (!otaMqttClient.connected()) {
+    if (now - lastOtaAttempt >= OTA_RETRY_MS) { lastOtaAttempt = now; connectOtaMQTT(); }
+  } else {
+    otaMqttClient.loop();
+  }
+  #endif
+}
+#endif
+
+
+/* =============================================================================
+   SETUP
+   ============================================================================= */
+/* =============================================================================
+   POWER-ON SELF-TEST
+   -----------------------------------------------------------------------------
+   Honest scope: this can only verify what's actually observable over the
+   I2C/1-Wire buses - it CANNOT detect a physical short, a loose jumper, or a
+   disconnected buzzer/IR LED, since none of those have a feedback path into
+   the ESP32. What it DOES verify: the OLED responds (or nothing works at
+   all), the DS3231 responds, and the SHT4x gives a real reading. The buzzer
+   chime itself is your manual confirmation that ITS wiring is good - you'll
+   simply hear it or you won't.
+   ============================================================================= */
+void showCenteredText(const char* line1, const char* line2) {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  int16_t x1, y1; uint16_t w, h;
+  display.getTextBounds(line1, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor((SCREEN_WIDTH - w) / 2, line2 ? 22 : 28);
+  display.print(line1);
+  if (line2) {
+    display.getTextBounds(line2, 0, 0, &x1, &y1, &w, &h);
+    display.setCursor((SCREEN_WIDTH - w) / 2, 38);
+    display.print(line2);
+  }
+  display.display();
+}
+
+// 4-second "powering on" chime: three short beeps, then one longer confirm tone.
+void playPowerOnChime() {
+  for (uint8_t i = 0; i < 3; i++) {
+    digitalWrite(PIN_BUZZER, HIGH); delay(150);
+    digitalWrite(PIN_BUZZER, LOW);  delay(150);
+  }
+  delay(300);
+  digitalWrite(PIN_BUZZER, HIGH); delay(2800);
+  digitalWrite(PIN_BUZZER, LOW);
+  buzzerOffAt = 0;   // belt-and-suspenders: guarantee clean state before setupWiFi()'s blocking wait
+  // 150*2*3 + 300 + 2800 = 4000ms exactly.
+}
+
+// Fault state: something that IS software-checkable failed. Alarm forever
+// and refuse to proceed into normal operation - this device controls an AC
+// and a thermal-emergency system, so it should not run on unverified wiring.
+void faultHalt(const char* reason) {
+  Serial.print(F("SELF-TEST FAILED: ")); Serial.println(reason);
+  while (true) {
+    showCenteredText("DISCONNECT", "POWER!");
+    digitalWrite(PIN_BUZZER, HIGH); delay(120);
+    digitalWrite(PIN_BUZZER, LOW);  delay(120);
+  }
+}
+
+void setup() {
+  Serial.begin(115200); delay(200);
+  pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
+  for (uint8_t i = 0; i < NUM_BUTTONS; i++) pinMode(buttons[i].pin, INPUT_PULLUP);
+#ifdef USE_NEOPIXEL
+  ring.begin(); ring.setBrightness(60); ring.clear(); ring.show();
+#else
+  pinMode(LED_RED,OUTPUT);pinMode(LED_YELLOW,OUTPUT);pinMode(LED_GREEN,OUTPUT);
+  pinMode(LED_BLUE,OUTPUT);pinMode(LED_ORANGE,OUTPUT);pinMode(LED_WHITE,OUTPUT);
+#endif
+
+  Wire.begin(PIN_SDA, PIN_SCL);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    Serial.println(F("SSD1306 not found."));
+    // Can't show anything on a dead display - alarm on the buzzer alone.
+    while (true) { digitalWrite(PIN_BUZZER, HIGH); delay(120); digitalWrite(PIN_BUZZER, LOW); delay(120); }
+  }
+  display.clearDisplay(); display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0,0); display.println(F("Smart Climate")); display.println(F("AC IR Scheduler"));
+  display.display(); delay(800);
+
+  if (!rtc.begin()) faultHalt("DS3231 not found");
+  if (rtc.lostPower()) { rtc.adjust(DateTime(F(__DATE__), F(__TIME__))); Serial.println(F("RTC set to compile time.")); }
+
+  if (!sht40.begin(&Wire)) faultHalt("SHT4x not responding");
+  IrSender.begin(PIN_IR_SEND);
+  IrReceiver.begin(PIN_IR_RECV, DISABLE_LED_FEEDBACK);
+
+  // Confirm the SHT4x is actually giving real readings (not just that
+  // begin() succeeded) before declaring the self-test passed - same
+  // retry-with-delay approach used for the sensor this replaced.
+  showCenteredText("Checking", "connections...");
+  bool dhtOK = false;
+  for (uint8_t attempt = 0; attempt < 3 && !dhtOK; attempt++) {
+    delay(2000);
+    sensors_event_t humidity, temp;
+    if (sht40.getEvent(&humidity, &temp) && !isnan(temp.temperature)) dhtOK = true;
+  }
+  if (!dhtOK) faultHalt("SHT4x not responding");
+
+  // RTC, OLED, and SHT4x all check out. IR LED / IR receiver / buzzer have
+  // no feedback path the ESP32 can read, so they are NOT verified here -
+  // the chime below is your own ears confirming the buzzer branch, and a
+  // phone camera pointed at the IR LEDs during a blast is the equivalent
+  // manual check for that branch.
+  showCenteredText("ALL SYSTEMS", "POWERED!");
+  playPowerOnChime();
+
+  loadSettings();   // restore saved daily schedule + armed event from flash
+  loadAllLearnedCodes();   // restore any previously-registered indoor-unit remote codes
+
+  // Resume an event that was already firing when power was lost.
+  {
+    DateTime now = rtc.now();
+    if (otEvent.enabled && otEvent.fired && !otEvent.offFired) {
+      DateTime target(otEvent.year, otEvent.month, otEvent.day, otEvent.hour, otEvent.minute, 0);
+      bool stillActive = !otEvent.autoOff ||
+                         now.unixtime() < target.unixtime() + (uint32_t)otEvent.offHours * 3600UL;
+      if (stillActive) { manualOverride = true; acPowerOn(otEvent.targetC); }
+    }
+  }
+
+#ifdef ENABLE_WIFI
+  display.clearDisplay(); display.setCursor(0,0); display.println(F("Starting WiFi...")); display.display();
+  setupWiFi(); startWebServer();
+  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
+  mqttClient.setCallback(mqttCallback);
+  #ifdef ENABLE_OTA
+  otaMqttClient.setServer(OTA_MQTT_HOST, OTA_MQTT_PORT);
+  otaMqttClient.setCallback(otaMqttCallback);
+  #endif
+  display.clearDisplay(); display.setCursor(0,0);
+  display.println(apMode ? F("Hotspot (connect to)") : F("WiFi connected"));
+  if (apMode) { display.print(F("SSID: ")); display.println(AP_SSID); }
+  display.println(); display.println(F("Open in browser:"));
+  display.print(F("http://")); display.println(ipStr);
+  display.display(); delay(4000);
+#endif
+
+  Serial.println(F("Setup complete."));
+}
+
+
+/* =============================================================================
+   MAIN LOOP
+   ============================================================================= */
+void loop() {
+#ifdef ENABLE_WIFI
+  server.handleClient();
+  serviceMQTT();
+#endif
+  DateTime now = rtc.now();
+  scanButtons();
+  handleButtons();
+  serviceIRCapture();     // async wizard capture - never blocks anything below
+  readSensors();
+  checkEmergency();       // priority 1
+  checkOneTimeEvent(now); // priority 2 (dated one-shot)
+  checkSchedule(now);     // priority 3 (daily)
+  updateDemoIndicators();
+  updateDisplay(now);
+  serviceBuzzer();
+}
+
+#endif  // DECODE_MODE
