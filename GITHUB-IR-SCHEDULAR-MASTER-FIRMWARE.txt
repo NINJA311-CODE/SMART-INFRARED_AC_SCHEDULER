@@ -40,7 +40,7 @@
 #define AP_PASS         "123456789"        // AP password to enter that portal
 #define WIFI_PORTAL_TIMEOUT_S 180            // give up waiting for setup after 3 min, keep retrying later
 #define ENABLE_NTP      1
-#define NTP_GMT_OFFSET  (YOUR_COUNTRY * 3600)        // Dammam / LOCAL_TIME = UTC+(YOUR_COUNTRY)
+#define NTP_GMT_OFFSET  (3 * 3600)        // Dammam / KSA = UTC+3
 #define NTP_DST_OFFSET  0
 
 /* ------------------------------ MQTT CONFIG --------------------------------
