@@ -1255,45 +1255,15 @@ Before calling this a production-ready release, perform these final checks.
 | IR table | Complete registration for the target AC or ship the learned NVS dataset as a controlled deployment artifact. |
 | Demo timer | Ensure `DEMO_FAST_TIMERS` is disabled for the real-world configuration. |
 
----
 
-# 📂 22. Suggested Repository Structure
-
-```text
-SMART-INFRARED_AC_SCHEDULER/
-│
-├── firmware/
-│   ├── SMART-IR-SCHEDULER.ino
-│   ├── config.example.h
-│   └── README.md
-│
-├── web/
-│   ├── React / Lovable application
-│   └── README.md
-│
-├── hardware/
-│   ├── schematic/
-│   ├── pcb/
-│   ├── gerbers/
-│   └── enclosure/
-│
-├── docs/
-│   ├── architecture/
-│   ├── wiring/
-│   └── demo/
-│
-├── .gitignore
-└── README.md
-
-```
 
 ---
 
-# 🎥 23. Demonstration
+# 🎥 22. Demonstration
 
 ## 🌐 Live Web Dashboard
 
-**Web Application URL:** [esp32ac.lovable.app](https://www.google.com/search?q=https://esp32ac.lovable.app)
+**Web Application URL:**: esp32ac.lovable.app
 
 > *Note: Connecting the web dashboard to your ESP32 requires configuring your HiveMQ MQTT broker details within the application settings.*
 
@@ -1312,15 +1282,11 @@ SMART-INFRARED_AC_SCHEDULER/
 7. One-time pre-cooling arrival event
 8. Manual override execution
 9. Schedule resumption ("Resume Schedule")
-10. 35°C emergency thermal response
-11. Offline resiliency test (Wi-Fi disconnect)
-12. NVS persistence check across reboot
-13. Remote React dashboard control over TLS MQTT
-14. Hardware iteration overview & Rev 1 PCB post-mortem
+10. Remote React dashboard control over TLS MQTT
 
 ---
 
-# 🧠 24. Engineering Summary
+# 🧠 23. Engineering Summary
 
 This project is intentionally not just an "ESP32 IR blaster".
 
@@ -1365,7 +1331,7 @@ That principle is what allows the same device to remain useful during an ordinar
 
 ---
 
-# 🗺️️ 25. Roadmap
+# 🗺️️ 24. Roadmap
 
 ### Rev 2 Hardware
 
@@ -1395,7 +1361,7 @@ That principle is what allows the same device to remain useful during an ordinar
 
 ---
 
-# 26. Acknowledgments
+# 25. Acknowledgments
 
 Built using and inspired by:
 
@@ -1411,7 +1377,8 @@ Built using and inspired by:
 * **Lovable**
 * **EasyEDA Pro**
 * **JLCPCB**
-
+* **Claude** Used for firmware development
+* **Gemini** Used for hardware debugging, wiring advices/tips, and part upgrades,used for CAD model help.
 ---
 
 ## 📌 Final Statement
