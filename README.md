@@ -1,4 +1,3 @@
-```markdown
 # 🎉 SMART-INFRARED_AC_SCHEDULER
 
 ![Build](https://img.shields.io/badge/Build-ESP32%20%2B%20Arduino-informational)
@@ -75,9 +74,7 @@ This project inserts a small controller between the human and the existing AC:
      └──────┬───┘
             │
        HiveMQ Cloud
-
 ```
-
 ---
 
 # 🏖️ 3. Why It Matters During Vacation
@@ -88,25 +85,20 @@ This project inserts a small controller between the human and the existing AC:
 
 A user can configure:
 
-```text
 Daily Schedule
 08:00 → 17:00
 Target: 22°C
 Enabled: YES
 
-```
-
 The device automatically manages the AC every day without requiring a phone.
 
 Before returning home, the user can create a **one-time dated event**:
 
-```text
 03 Oct 2026
 06:00
 Target: 22°C
 Auto-off: 3 hours
 
-```
 
 The controller can then switch the AC on at that exact date/time and shut it down automatically after the configured window.
 
@@ -116,18 +108,16 @@ The vacation schedule does **not** depend on MQTT.
 
 The DS3231 keeps time locally and the ESP32 continues running:
 
-```text
 Internet available      → Remote control + local automation
 Internet unavailable    → Local automation continues
 Wi-Fi unavailable       → Local automation continues
 Power restored           → Saved schedule/event/IR codes reload
 Reboot during event      → Active event can be resumed
 
-```
 
 This is a key architectural property of the project: **cloud connectivity is an enhancement, not the automation engine itself.**
 
----
+
 
 # ✨ 4. Core Features
 
@@ -176,10 +166,8 @@ The SHT40 continuously provides room temperature feedback.
 
 When:
 
-```text
 Room temperature >= 35°C
 
-```
 
 and the sensor is valid and there is no active manual override, the firmware:
 
@@ -191,12 +179,12 @@ and the sensor is valid and there is no active manual override, the firmware:
 
 The hysteresis / release point is:
 
-```text
+
 Trigger:  >= 35°C
 Clear:    < 24°C
 Minimum runtime: 1 hour in the real configuration
 
-```
+
 
 A fast demonstration timer is available in firmware for exhibition use.
 
@@ -208,7 +196,7 @@ The controller can clone the real AC remote at the raw timing level.
 
 Learned command slots:
 
-```text
+
 1 × Power ON
 1 × Power OFF
 14 × Temperature settings
@@ -216,7 +204,6 @@ Learned command slots:
 ----------------------
 16 total command slots
 
-```
 
 The registration wizard:
 
@@ -236,13 +223,13 @@ Unlearned slots fall back to safe placeholder arrays, so skipping a registration
 
 The physical interface remains functional without a phone.
 
-```text
+
 UP / DOWN   → change temperature
 LEFT / RIGHT→ power ON
 OK          → power OFF
 BACK        → exit remote screen
 
-```
+
 
 ## 💻 Local Web Dashboard
 
@@ -285,20 +272,20 @@ The cloud UI communicates with the ESP32 through the MQTT layer rather than dire
 
 Primary control transport:
 
-```text
+
 ESP32 ↔ TLS MQTT ↔ HiveMQ Cloud ↔ React/Lovable dashboard
 
-```
+
 
 Topics used by the firmware:
 
-```text
+
 home/ac/manual_cmd
 home/ac/schedule_set
 home/ac/event_set
 home/ac/status
 
-```
+
 
 The ESP32 publishes status every **5 seconds** while connected.
 
@@ -415,13 +402,13 @@ The firmware uses explicit state flags instead of blocking delay-driven scheduli
 
 ### 🎯 Operational Priorities
 
-```text
+
 1. Emergency thermal logic
 2. One-time dated event
 3. Daily schedule
 4. Manual mode as an explicit override gate
 
-```
+
 
 More precisely:
 
@@ -615,14 +602,14 @@ For OTA, configure the deployment broker separately:
 3. Upload the firmware.
 4. Open Serial Monitor at:
 
-```text
+
 115200 baud
 
-```
+
 
 The boot sequence performs:
 
-```text
+
 OLED initialization
         ↓
 DS3231 validation
@@ -637,7 +624,7 @@ Wi-Fi provisioning (when enabled)
         ↓
 Web server + MQTT services
 
-```
+
 
 ## 📶 Step 5 — Configure Wi-Fi
 
@@ -663,7 +650,7 @@ MENU
 
 The registration sequence captures:
 
-```text
+
 1. Power ON
 2. Power OFF
 3. 17°C
@@ -672,7 +659,7 @@ The registration sequence captures:
 ...
 16. 30°C
 
-```
+
 
 For each step:
 
@@ -693,17 +680,17 @@ Optional test-fire
 
 The capture window is:
 
-```text
+
 8 seconds
 
-```
+
 
 The raw buffer is sized for long indoor-unit frames:
 
-```text
+
 RAW_BUFFER_LENGTH = 400
 
-```
+
 
 A received code is stored in compact tick-based form and reconstructed to microsecond timings before transmission.
 
@@ -717,7 +704,7 @@ A received code is stored in compact tick-based form and reconstructed to micros
 
 Topic:
 
-```text
+
 home/ac/manual_cmd
 
 ```
@@ -750,10 +737,10 @@ Resume automatic scheduling:
 
 Topic:
 
-```text
+
 home/ac/schedule_set
 
-```
+
 
 Example:
 
@@ -775,10 +762,10 @@ The firmware accepts **partial fields** and updates only the supplied schedule a
 
 Topic:
 
-```text
+
 home/ac/event_set
 
-```
+
 
 Example:
 
@@ -798,23 +785,23 @@ Example:
 
 This means:
 
-```text
+
 03 Oct 2026
 06:00
 22°C
 Auto-off after 3 hours
 Armed
 
-```
+
 
 ## 📊 Device Status
 
 Topic:
 
-```text
+
 home/ac/status
 
-```
+
 
 Representative payload:
 
@@ -831,20 +818,19 @@ Representative payload:
 
 Possible firmware modes include:
 
-```text
+
 emergency
 manual
 schedule
 schedule_off
 
-```
 
 The device publishes fresh status every:
 
-```text
+
 5 seconds
 
-```
+
 
 ---
 
@@ -867,12 +853,12 @@ This local path intentionally operates alongside MQTT.
 
 That means the system has two independent control interfaces:
 
-```text
+
 Local network / device AP
             +
 Internet / MQTT cloud
 
-```
+
 
 ---
 
@@ -909,11 +895,11 @@ The dashboard therefore remains responsive without needing the cloud application
 
 ## 🏢 A. Daily Occupancy Window
 
-```text
+
 08:00 → AC ON at 22°C
 17:00 → AC OFF
 
-```
+
 
 Good for a recurring period when people are normally present.
 
@@ -1010,7 +996,7 @@ Similarly, MQTT retries are timer-gated so a temporary network failure does not 
 
 ### ⏲️ Timing Characteristics
 
-```text
+
 SHT40 sample interval:       2 s
 OLED update interval:       250 ms
 MQTT status interval:       5 s
@@ -1020,14 +1006,14 @@ OTA broker retry:           60 s
 IR learning window:          8 s
 Emergency retrigger:        60 s
 
-```
+
 
 The raw IR playback itself is delegated to IRremote at:
 
-```text
+
 38 kHz carrier
 
-```
+
 
 with captured mark/space timings reconstructed before transmission.
 
@@ -1109,11 +1095,11 @@ Rev 2 changes are explicitly targeted at manufacturability and electrical robust
 
 Increase minimum clearance to:
 
-```text
+
 ≥ 0.254 mm
 = 10 mil
 
-```
+
 
 This replaces the overly aggressive under-clearance assumptions used in Rev 1.
 
@@ -1192,7 +1178,7 @@ The current architecture also passes a GitHub access token in the OTA message pa
 
 For production deployment, recommended hardening is:
 
-```text
+
 Per-device authorization
       +
 Scoped release credentials
@@ -1292,7 +1278,7 @@ This project is intentionally not just an "ESP32 IR blaster".
 
 It combines:
 
-```text
+
 Embedded firmware
         +
 Real-time state management
@@ -1321,7 +1307,7 @@ Custom PCB
         +
 Custom enclosure
 
-```
+
 
 The central design principle is:
 
@@ -1391,4 +1377,4 @@ The project combines real embedded constraints, cloud connectivity, physical UI,
 
 ```
 
-```
+
