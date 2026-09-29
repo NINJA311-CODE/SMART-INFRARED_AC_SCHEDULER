@@ -1,0 +1,64 @@
+name: Build and Release ESP32 Firmware
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Run PlatformIO Build
+        run: pio run
+
+      - name: Create Release and Upload Binary Asset
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest
+          name: "Latest Auto-compiled Firmware"
+          body: "Automated firmware binary built from commit ${{ github.sha }}."
+          draft: false
+          prerelease: false
+          files: .pio/build/esp32dev/firmware.bin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish MQTT OTA Notification to ESP32
+        run: |
+          # 1. Query GitHub API for the newly generated Asset ID
+          ASSET_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/releases/tags/latest \
+            | jq -r '.assets[] | select(.name=="firmware.bin") | .id')
+
+          OTA_URL="https://api.github.com/repos/${{ github.repository }}/releases/assets/$ASSET_ID"
+          echo "Generated Release Asset URL: $OTA_URL"
+
+          # 2. Install Mosquitto CLI client
+          sudo apt-get update && sudo apt-get install -y mosquitto-clients
+
+          # 3. Construct JSON payload containing both the download URL and the GitHub PAT
+          PAYLOAD=$(jq -n \
+            --arg url "$OTA_URL" \
+            --arg token "${{ secrets.AUTO_OTA_PAT }}" \
+            '{url: $url, token: $token}')
+
+          # 4. Send MQTT message directly to ESP32 to start download
+          mosquitto_pub -h "YOUR_MQTT_OTA_URL" \
+            -p 8883 -u "YOUR_MQTT_OTA_USERNAME" -P "YOUR_MQTT_OTA_PASSWORD" \
+            -t "fleet/firmware/update" \
+            -m "$PAYLOAD" --capath /etc/ssl/certs
