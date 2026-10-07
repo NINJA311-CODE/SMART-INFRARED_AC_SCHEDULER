@@ -1,5 +1,3 @@
-<img width="1920" height="349" alt="image" src="https://github.com/user-attachments/assets/dd51c3b6-dfa7-49fd-9439-843bcbcc11a3" />
-
 # 🎉 SMART-INFRARED_AC_SCHEDULER
 
 ![Build](https://img.shields.io/badge/Build-ESP32%20%2B%20Arduino-informational)
@@ -433,6 +431,8 @@ This creates one consistent rule across local buttons, local web control, and cl
 **ESP32 30-pin NodeMCU-style CH340 board**
 
 ### 🧩 Connected Hardware
+<img width="695" height="338" alt="Screenshot 2026-07-06 140028" src="https://github.com/user-attachments/assets/45c80b98-5eeb-4d98-94ca-119e2d4be252" />
+
 
 | Subsystem | Device | Purpose |
 | --- | --- | --- |
@@ -465,13 +465,6 @@ This creates one consistent rule across local buttons, local web control, and cl
 | 27 | RIGHT button | Menu navigation |
 | 26 | OK button | Select/save |
 | 25 | BACK button | Back/exit |
-| 32 | Red LED | Status indicator |
-| 33 | Yellow LED | Status indicator |
-| 19 | Green LED | Status indicator |
-| 17 | Blue LED | Status indicator |
-| 16 | Orange LED | Status indicator |
-| 2 | White LED | Status indicator |
-
 > The OLED, DS3231, and SHT40 share the I2C bus.
 
 ---
@@ -1023,6 +1016,9 @@ with captured mark/space timings reconstructed before transmission.
 
 # 🛠️ 18. Hardware Engineering & V1 Post-Mortem
 
+<img width="843" height="945" alt="Screenshot 2026-09-29 232251" src="https://github.com/user-attachments/assets/12512b9c-c309-4bf5-b71e-6542b701ef97" />
+
+
 This project deliberately documents the Rev 1 failure instead of hiding it.
 
 > **The PCB failure was not the end of the project; it became part of the engineering validation cycle.**
@@ -1066,8 +1062,6 @@ This narrowed the problem to the PCB layout itself rather than the logical firmw
 ## 🧪 Functional Prototype Validation
 
 To preserve full functional validation for the Stardance demonstration, the same control circuit was reconstructed and verified on a **breadboard prototype rig**.
-
-This allowed the team to validate:
 
 * ESP32 firmware,
 * DS3231 timekeeping,
