@@ -1,3 +1,5 @@
+<img width="1920" height="349" alt="image" src="https://github.com/user-attachments/assets/dd51c3b6-dfa7-49fd-9439-843bcbcc11a3" />
+
 # 🎉 SMART-INFRARED_AC_SCHEDULER
 
 ![Build](https://img.shields.io/badge/Build-ESP32%20%2B%20Arduino-informational)
