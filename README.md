@@ -1030,13 +1030,10 @@ The first PCB revision was designed in **EasyEDA Pro** and fabricated through **
 During physical validation, the combination of aggressive DRC clearance settings and autorouted traces produced problematic geometry around the 2.54 mm header interfaces.
 
 Observed issues included:
-
-* copper-pour overlap / near-overlap,
-* extremely thin soldermask slivers,
-* insufficient isolation between ground copper and header annular-ring areas,
 * practical 3.3V-to-GND shorting paths.
 
 The board could not be treated as a trustworthy demonstration platform in that state.
+‼️ *THIS ISSUE HAS BEEN FIXED IN THE LATEST GERBER FILE!
 
 ## 🔍 Debugging & Isolation
 
@@ -1223,25 +1220,10 @@ If power is lost while a one-time event is active, the firmware checks the RTC a
 
 ---
 
-# 🧹 21. Important Pre-Release Cleanup
-
-Before calling this a production-ready release, perform these final checks.
-
-| Item | Action |
-| --- | --- |
-| Emergency UI text | Firmware and dashboard use the **35°C** emergency threshold. |
-| Credentials | Move all passwords/tokens out of source control. |
-| TLS | Replace `setInsecure()` with certificate validation. |
-| OTA auth | Replace payload-carried long-lived PATs with scoped/short-lived authorization. |
-| V2 PCB | Run full DRC/ERC and inspect Gerbers before fabrication. |
-| IR table | Complete registration for the target AC or ship the learned NVS dataset as a controlled deployment artifact. |
-| Demo timer | Ensure `DEMO_FAST_TIMERS` is disabled for the real-world configuration. |
-
-
 
 ---
 
-# 🎥 22. Demonstration
+# 🎥 21. Demonstration
 
 ## 🌐 Live Web Dashboard
 
@@ -1268,7 +1250,7 @@ Before calling this a production-ready release, perform these final checks.
 
 ---
 
-# 🧠 23. Engineering Summary
+# 🧠 22. Engineering Summary
 
 This project is intentionally not just an "ESP32 IR blaster".
 
@@ -1313,7 +1295,7 @@ That principle is what allows the same device to remain useful during an ordinar
 
 ---
 
-# 🗺️️ 24. Roadmap
+# 🗺️️ 23. Roadmap
 
 ### Rev 2 Hardware
 
@@ -1343,7 +1325,7 @@ That principle is what allows the same device to remain useful during an ordinar
 
 ---
 
-# 25. Acknowledgments
+# 24. Acknowledgments
 
 Built using and inspired by:
 
