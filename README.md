@@ -69,6 +69,8 @@ Set a daily window, say 08:00 to 17:00 at 22°C, and the device switches the AC 
 
 The full parts list with links and prices is in `bom.csv`.
 
+## ‼️THERE IS ONE BREADBOARD AND ONE PCB VERSION OF THIS PROJECT‼️
+
 My prototype used a 2N2222 and an S8050 in the Darlington pair. This BOM and diagram show two SS8050s, which should handle the LED current more comfortably, but I haven’t tested that exact pair.
 
 Pinout:
