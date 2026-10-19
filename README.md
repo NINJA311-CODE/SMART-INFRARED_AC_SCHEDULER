@@ -16,7 +16,7 @@ or leave it OFF to come in a oven hot room with damaged things in the room!
 
 to solve this, i needed to make a device which could turn the AC ON automatically to cool once the room gets hot,and to be able to monitor room status ,set schedules, control the AC from another country as well with wifi
 
-Cloud-only smart plugs and controllers don't fully fix this, because if the Wi-Fi or the cloud service drops, the automation stops with it. So here the ESP32 runs everything itself and the cloud is only used to reach it from outside.As this device once a schedule is set online or offline,it can run that schedule reliably even without internet
+Cloud-only smart plugs and controllers don't fully fix this, because if the Wi-Fi or the cloud service drops, the automation stops with it. So here the ESP32 runs everything itself and the cloud is only used to reach it from outside. As this device once a schedule is set online or offline,it can run that schedule reliably even without internet
 
 🏆so once i completed making this device ,i left it in my home to run for a whole month unattended and everything worked perfectly by the time i came back,AND there is almost 0 latency for a command to control the AC on the webapp‼️
 
@@ -58,7 +58,7 @@ Set a daily window, say 08:00 to 17:00 at 22°C, and the device switches the AC 
 |---|---|
 | ESP32 30-pin NodeMCU-style board (CH340) | Control, Wi-Fi, scheduling |
 | DS3231 RTC | Keeps time without internet |
-| Adafruit SHT40 | Room temperature and humidity |
+| SHT40 sensor module | Room temperature and humidity |
 | 0.96" SSD1306 OLED | Local menu and status |
 | VS1838B IR receiver | Learns the original remote |
 | IR LED with driver stage | Sends commands to the AC |
@@ -67,7 +67,7 @@ Set a daily window, say 08:00 to 17:00 at 22°C, and the device switches the AC 
 | Custom PCB (EasyEDA Pro, made by JLCPCB) | Rev 1 board |
 | 3D-printed enclosure | Housing |
 
-The full parts list with links and prices is in `bom.csv`.
+Parts lists with links and prices in USD: `bom.csv` for the breadboard version and `bom_pcb.csv` for the PCB version.
 
 ## ‼️THERE IS ONE BREADBOARD AND ONE PCB VERSION OF THIS PROJECT‼️
 
