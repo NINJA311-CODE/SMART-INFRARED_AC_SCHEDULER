@@ -1,5 +1,8 @@
 ## 📱📡Smart Infrared AC Scheduler
 
+<img width="1152" height="864" alt="image" src="https://github.com/user-attachments/assets/9fe1655c-b94f-45e5-96f0-592623fc27ec" />
+
+
 An ESP32 controller that gives an ordinary infrared air conditioner schedules, remote control and temperature-based protection, and keeps working when the internet goes down.
 
 
