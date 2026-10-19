@@ -97,7 +97,7 @@ Four things can control the AC, and they are checked in this order:
 
 The same rule applies whether the command came from the buttons, the local page or the cloud.
 
-The emergency logic uses hysteresis so it doesn't flap. It triggers at 35°C, clears below 24°C, must run for at least 1 hour, and can retrigger at most once every 60 seconds. A `DEMO_FAST_TIMERS` switch shortens the timers for exhibitions. This is a thermal-response feature, not a certified safety system.
+The emergency logic uses hysteresis so it doesn't flap. It triggers at 35°C, clears below 24°C, must run for at least 1 hour, and can retrigger at most once every 60 seconds. This is a thermal-response feature, not a certified safety system.
 
 For IR learning, the VS1838B captures raw mark and space timings in an 8-second window (buffer of 400 entries). Frames that arrive within 500 ms of the ESP32's own transmission are ignored so it doesn't learn its own reflection. Codes are saved to NVS immediately, and a test-fire lets you check each one. Settings are stored field by field with version numbers, not as raw structs, so compiler padding can't corrupt them between builds.
 
