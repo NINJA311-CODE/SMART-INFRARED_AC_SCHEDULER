@@ -1,8 +1,7 @@
-# Smart Infrared AC Scheduler
+📱📡# Smart Infrared AC Scheduler
 
 An ESP32 controller that gives an ordinary infrared air conditioner schedules, remote control and temperature-based protection, and keeps working when the internet goes down.
 
-![Assembled device](images/device.jpg)
 
 **Live dashboard:** https://esp32ac.lovable.app
 (To connect it to your own ESP32, enter your HiveMQ broker details in the dashboard settings.)
@@ -11,9 +10,15 @@ An ESP32 controller that gives an ordinary infrared air conditioner schedules, r
 
 ## Why I made it
 
-A normal split AC has a remote and nothing else. No schedule, no internet, no way to check on it from another city. That is a real problem when you leave for a few weeks: keep the AC running and you waste power, switch it off and you come back to a hot room.
+So i wanted to find a solution for people going on vacations during summer months and the issue was 2 bad choices:
+either leave the AC continuously running which gives a huge electricity bill
+or leave it OFF to come in a oven hot room with damaged things in the room!
 
-Cloud-only smart plugs and controllers don't fully fix this, because if the Wi-Fi or the cloud service drops, the automation stops with it. So here the ESP32 runs everything itself and the cloud is only used to reach it from outside.
+to solve this, i needed to make a device which could turn the AC ON automatically to cool once the room gets hot,and to be able to monitor room status ,set schedules, control the AC from another country as well with wifi
+
+Cloud-only smart plugs and controllers don't fully fix this, because if the Wi-Fi or the cloud service drops, the automation stops with it. So here the ESP32 runs everything itself and the cloud is only used to reach it from outside.As this device once a schedule is set online or offline,it can run that schedule reliably even without internet
+
+🏆so once i completed making this device ,i left it in my home to run for a whole month unattended and everything worked perfectly by the time i came back,AND there is almost 0 latency for a command to control the AC on the webapp‼️
 
 ## How you would use it
 
@@ -23,7 +28,8 @@ Set a daily window, say 08:00 to 17:00 at 22°C, and the device switches the AC 
 
 | 3D model of the full assembly | Wiring diagram (breadboard rig) |
 |---|---|
-| ![3D model](images/cad-assembly.png) | <img width="1265" height="931" alt="image" src="https://github.com/user-attachments/assets/d69f5c9a-fdd1-4227-9b1b-c053920c69d0" />
+| <img width="409" height="491" alt="Screenshot 2026-10-17 231416" src="https://github.com/user-attachments/assets/ff1da060-e3ca-4efd-be24-44b04bd429a4" />
+ | <img width="1265" height="931" alt="image" src="https://github.com/user-attachments/assets/d69f5c9a-fdd1-4227-9b1b-c053920c69d0" />
  |
 
 ## Features
@@ -127,7 +133,7 @@ An offline build keeps the scheduler, clock, buttons, IR learning and emergency 
 
 Wi-Fi credentials are not in the code. WiFiManager opens a hotspot for them, and if the device can't get online it carries on in offline mode.
 
-### MQTT topics
+### MQTT topics WEBAPP HANDLES ALL OF THIS, ONLY NEEDS YOUR OWN HIVEMQ CREDENTIALS‼️
 
 | Topic | Purpose |
 |---|---|
