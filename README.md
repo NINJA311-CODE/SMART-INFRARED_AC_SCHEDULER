@@ -23,7 +23,8 @@ Set a daily window, say 08:00 to 17:00 at 22°C, and the device switches the AC 
 
 | 3D model of the full assembly | Wiring diagram (breadboard rig) |
 |---|---|
-| ![3D model](images/cad-assembly.png) | ![Wiring](images/wiring-diagram.png) |
+| ![3D model](images/cad-assembly.png) | <img width="1265" height="931" alt="image" src="https://github.com/user-attachments/assets/d69f5c9a-fdd1-4227-9b1b-c053920c69d0" />
+ |
 
 ## Features
 
