@@ -2,6 +2,7 @@
 
 An ESP32 controller that gives an ordinary infrared air conditioner schedules, remote control and temperature-based protection, and keeps working when the internet goes down.
 
+![Assembled device](images/device.jpg)
 
 **Live dashboard:** https://esp32ac.lovable.app
 (To connect it to your own ESP32, enter your HiveMQ broker details in the dashboard settings.)
@@ -20,10 +21,9 @@ Set a daily window, say 08:00 to 17:00 at 22°C, and the device switches the AC 
 
 ## Images
 
-| 3D model of the full assembly ||
+| 3D model of the full assembly | Wiring diagram (breadboard rig) |
 |---|---|
-| <img width="409" height="491" alt="image" src="https://github.com/user-attachments/assets/986e5b8d-cbe4-45dc-982e-168e83e634b0" />
- ||
+| ![3D model](images/cad-assembly.png) | ![Wiring](images/wiring-diagram.png) |
 
 ## Features
 
