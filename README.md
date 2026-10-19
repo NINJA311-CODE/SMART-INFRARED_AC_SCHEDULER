@@ -152,15 +152,7 @@ Modes reported are `emergency`, `manual`, `schedule` and `schedule_off`.
 
 `/` (dashboard, refreshes every 1.5 s), `/status`, `/cmd?action=on|off`, `/settemp?c=22`, `/schedule?...`, `/event?...`, `/resume`.
 
-## Repository layout
 
-```
-CAD/        STEP file of the full assembly and source design files
-PCB/        EasyEDA project, schematic, Gerbers
-firmware/   Arduino sketch
-images/     Screenshots and photos used in this README
-bom.csv     Bill of materials with links and prices (USD)
-```
 
 ## What went wrong with the PCB
 
