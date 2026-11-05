@@ -21,7 +21,6 @@
    ============================================================================= */
 
 // #define DECODE_MODE     // uncomment to build the IR SNIFFER (no WiFi)
-#define USE_NEOPIXEL       // comment out to use 6 discrete LEDs instead
 #define ENABLE_WIFI        // comment out for a pure offline build (still full-featured)
 
 // Bump this by hand whenever a build is meaningfully different, so the
@@ -115,8 +114,6 @@
 #define BTN_RIGHT 27
 #define BTN_OK 26
 #define BTN_BACK 25
-#define PIN_NEOPIXEL 5
-#define NUM_PIXELS 8
 #define LED_RED 32
 #define LED_YELLOW 33
 #define LED_GREEN 19
@@ -127,7 +124,7 @@
 
 /* -------------------------------- LIBRARIES --------------------------------
    Manage Libraries: RTClib, Adafruit SSD1306, Adafruit GFX Library,
-   Adafruit Unified Sensor, Adafruit SHT4x Library, IRremote (v4.x), Adafruit NeoPixel.
+   Adafruit Unified Sensor, Adafruit SHT4x Library, IRremote (v4.x).
    WiFi.h / WebServer.h / time.h / Preferences.h ship with the ESP32 core.
    --------------------------------------------------------------------------- */
 #include <Wire.h>
@@ -177,9 +174,6 @@ void loop() {
 #define RAW_BUFFER_LENGTH 400   // Indoor-unit AC frames can run long - default buffer is too small
 #include <IRremote.hpp>
 #include <Preferences.h>
-#ifdef USE_NEOPIXEL
-  #include <Adafruit_NeoPixel.h>
-#endif
 #ifdef ENABLE_WIFI
   #include <WiFi.h>
   #include <WebServer.h>
@@ -204,9 +198,6 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 RTC_DS3231 rtc;
 Adafruit_SHT4x sht40 = Adafruit_SHT4x();
 Preferences prefs;
-#ifdef USE_NEOPIXEL
-  Adafruit_NeoPixel ring(NUM_PIXELS, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
-#endif
 #ifdef ENABLE_WIFI
   WebServer server(80);
   String  ipStr = "";
@@ -584,23 +575,6 @@ void applyACTemp(uint8_t t) {
 void acPowerOn(uint8_t t) { sendLearnedOrFallback(learnedOn, RAW_AC_ON, ARRLEN(RAW_AC_ON)); delay(50); applyACTemp(t); }
 void acPowerOff() { sendLearnedOrFallback(learnedOff, RAW_AC_OFF, ARRLEN(RAW_AC_OFF)); acOn = false; }
 
-#ifdef USE_NEOPIXEL
-uint32_t setTempColor() {
-  if (!acOn)        return ring.Color(0, 0, 0);
-  if (acSetTemp<=19) return ring.Color(0, 0, 255);
-  if (acSetTemp<=22) return ring.Color(255, 60, 0);
-  return ring.Color(120, 120, 120);
-}
-void updateDemoIndicators() {
-  uint32_t power = acOn ? ring.Color(255,0,0) : ring.Color(4,0,0);
-  ring.setPixelColor(0, power); ring.setPixelColor(1, power);
-  uint32_t amb = (roomTempC > 25.0) ? ring.Color(255,150,0) : ring.Color(0,200,0);
-  ring.setPixelColor(2, amb); ring.setPixelColor(3, amb);
-  uint32_t c = setTempColor();
-  for (uint8_t i = 4; i < NUM_PIXELS; i++) ring.setPixelColor(i, c);
-  ring.show();
-}
-#else
 void updateDemoIndicators() {
   digitalWrite(LED_RED,    acOn ? HIGH : LOW);
   digitalWrite(LED_YELLOW, (roomTempC > 25.0) ? HIGH : LOW);
@@ -610,7 +584,6 @@ void updateDemoIndicators() {
   digitalWrite(LED_ORANGE, med ? HIGH : LOW);
   digitalWrite(LED_WHITE, mild ? HIGH : LOW);
 }
-#endif
 
 
 /* =============================================================================
@@ -2001,12 +1974,8 @@ void setup() {
   Serial.begin(115200); delay(200);
   pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) pinMode(buttons[i].pin, INPUT_PULLUP);
-#ifdef USE_NEOPIXEL
-  ring.begin(); ring.setBrightness(60); ring.clear(); ring.show();
-#else
   pinMode(LED_RED,OUTPUT);pinMode(LED_YELLOW,OUTPUT);pinMode(LED_GREEN,OUTPUT);
   pinMode(LED_BLUE,OUTPUT);pinMode(LED_ORANGE,OUTPUT);pinMode(LED_WHITE,OUTPUT);
-#endif
 
   Wire.begin(PIN_SDA, PIN_SCL);
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
