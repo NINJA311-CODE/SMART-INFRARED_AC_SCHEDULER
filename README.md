@@ -70,7 +70,7 @@ Set a daily window, say 08:00 to 17:00 at 22°C, and the device switches the AC 
 | Custom PCB (EasyEDA Pro, made by JLCPCB) | Rev 1 board |
 | 3D-printed enclosure | Housing |
 
-Parts lists with links and prices in USD: `bom.csv` for the breadboard version and `bom_pcb.csv` for the PCB version.
+Parts lists with links and prices in USD: `BREADBOARD-BOM.csv` for the breadboard version and `bom_pcb.csv` for the PCB version.
 
 ## ‼️THERE IS ONE BREADBOARD AND ONE PCB VERSION OF THIS PROJECT‼️
 
