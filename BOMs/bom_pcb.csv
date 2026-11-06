@@ -1,0 +1,23 @@
+Item,Purpose,Quantity,Unit cost (USD),Total cost (USD),Price basis,Link
+ESP32 30-pin NodeMCU dev board (CH340),"Main controller, Wi-Fi, scheduling",1,5.60,5.60,"AliExpress listing price, ESP32 board only (no extras option)",https://ar.aliexpress.com/item/1005012122870294.html
+DS3231 RTC module,Keeps time without internet,1,4.62,4.62,"AliExpress regular listing price, not the one-time new-user discount",https://ar.aliexpress.com/item/1005007143596890.html
+SHT40 temperature and humidity sensor module,Room temperature and humidity,1,4.34,4.34,AliExpress listing price,https://ar.aliexpress.com/item/1005005443339351.html
+0.96 inch SSD1306 I2C OLED 128x64,Local menu and status display,1,4.72,4.72,AliExpress listing price,https://ar.aliexpress.com/item/1005012369371560.html
+"VS1838B IR receiver (38 kHz), 10-piece pack",Learns the original AC remote,1,2.36,2.36,AliExpress listing price for the 10-piece pack,https://ar.aliexpress.com/item/1005004921187704.html
+"SS8050 NPN transistor, 20-piece pack",Darlington pair that drives the IR LED (2 used),1,3.41,3.41,AliExpress listing price for the 20-piece pack,https://ar.aliexpress.com/item/1005008583538092.html
+"5 mm 940 nm IR LED, 20-piece pack",Sends commands to the AC,1,2.74,2.74,AliExpress listing price for the 20-piece pack,https://ar.aliexpress.com/item/1005003852381793.html
+220 ohm resistor (through-hole),Base resistor between D4 and the first SS8050,1,0.13,0.13,Single piece from a local shop at about 0.5 SAR; AliExpress sells 100-piece packs per value (link),https://ar.aliexpress.com/item/1005002475253173.html
+1.8 ohm resistor (through-hole),IR LED series resistor to 5V,1,0.13,0.13,Single piece from a local shop at about 0.5 SAR; AliExpress sells 100-piece packs per value (link),https://ar.aliexpress.com/item/1005002475253173.html
+"Tactile push buttons, 20-piece pack","Up, down, left, right, OK, back (6 used)",1,3.00,3.00,AliExpress listing price for the 20-piece pack,https://ar.aliexpress.com/item/4001166999847.html
+USB data cable (to ESP32 board),Power and programming,1,3.95,3.95,AliExpress listing price (I already owned a cable),https://ar.aliexpress.com/item/1005007516957301.html
+"Custom PCB, 2-layer (JLCPCB)",Main board for the PCB version,5,0.40,2.00,JLCPCB order receipt (minimum order is 5 pcs),https://jlcpcb.com/
+"3D-printed casing, main body (Onshape Part 289)",Enclosure for the PCB version,1,3.10,3.10,JLCPCB order receipt,https://jlcpcb.com/
+"3D-printed casing, front plate (Onshape Part 290)",Enclosure front plate with display window,1,1.31,1.31,JLCPCB order receipt,https://jlcpcb.com/
+"Phillips countersunk head screw, GB/T 819 M2x8 (EDLW-CE1-M2-L8)",Casing assembly,2,0.01,0.01,JLCPCB order receipt,https://jlcpcb.com/
+"Heat-set threaded insert, brass M3x4 (EMLZ-M3-L4)",Casing assembly,8,0.02,0.13,JLCPCB order receipt,https://jlcpcb.com/
+"Heat-set threaded insert, brass M2x3 (EMLZ-M2-L3)",Casing assembly,4,0.01,0.05,JLCPCB order receipt,https://jlcpcb.com/
+"Phillips countersunk head screw, GB/T 819 M3x8 (EDLW-CE1-M3-L8)",Casing assembly,4,0.01,0.02,JLCPCB order receipt,https://jlcpcb.com/
+Shipping: JLCPCB order,PCB and casing delivery,1,23.21,23.21,JLCPCB order receipt,https://jlcpcb.com/
+Discount: JLCPCB order,Coupon applied at checkout,1,-11.53,-11.53,JLCPCB order receipt,https://jlcpcb.com/
+Shipping: AliExpress parts,Parts delivery,1,0.00,0.00,Free with AliExpress Choice shipping,https://www.aliexpress.com/
+TOTAL (including shipping),,,,53.30,,

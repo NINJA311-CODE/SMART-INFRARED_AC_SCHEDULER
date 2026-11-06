@@ -1,0 +1,17 @@
+Item,Purpose,Quantity,Unit cost (USD),Total cost (USD),Price basis,Link
+ESP32 30-pin NodeMCU dev board (CH340),"Main controller, Wi-Fi, scheduling",1,5.60,5.60,"AliExpress listing price, ESP32 board only (no extras option)",https://ar.aliexpress.com/item/1005012122870294.html
+DS3231 RTC module,Keeps time without internet,1,4.62,4.62,"AliExpress regular listing price, not the one-time new-user discount",https://ar.aliexpress.com/item/1005007143596890.html
+SHT40 temperature and humidity sensor module,Room temperature and humidity,1,4.34,4.34,AliExpress listing price,https://ar.aliexpress.com/item/1005005443339351.html
+0.96 inch SSD1306 I2C OLED 128x64,Local menu and status display,1,4.72,4.72,AliExpress listing price,https://ar.aliexpress.com/item/1005012369371560.html
+"VS1838B IR receiver (38 kHz), 10-piece pack",Learns the original AC remote,1,2.36,2.36,AliExpress listing price for the 10-piece pack,https://ar.aliexpress.com/item/1005004921187704.html
+"SS8050 NPN transistor, 20-piece pack",Darlington pair that drives the IR LED (2 used),1,3.41,3.41,AliExpress listing price for the 20-piece pack,https://ar.aliexpress.com/item/1005008583538092.html
+"5 mm 940 nm IR LED, 20-piece pack",Sends commands to the AC,1,2.74,2.74,AliExpress listing price for the 20-piece pack,https://ar.aliexpress.com/item/1005003852381793.html
+220 ohm resistor (through-hole),Base resistor between D4 and the first SS8050,1,0.13,0.13,Single piece from a local shop at about 0.5 SAR; AliExpress sells 100-piece packs per value (link),https://ar.aliexpress.com/item/1005002475253173.html
+1.8 ohm resistor (through-hole),IR LED series resistor to 5V,1,0.13,0.13,Single piece from a local shop at about 0.5 SAR; AliExpress sells 100-piece packs per value (link),https://ar.aliexpress.com/item/1005002475253173.html
+680 ohm resistor (through-hole),Series resistor for the buzzer (optional),1,0.13,0.13,Single piece from a local shop at about 0.5 SAR; AliExpress sells 100-piece packs per value (link),https://ar.aliexpress.com/item/1005002475253173.html
+"Tactile push buttons, 20-piece pack","Up, down, left, right, OK, back (6 used)",1,3.00,3.00,AliExpress listing price for the 20-piece pack,https://ar.aliexpress.com/item/4001166999847.html
+Active buzzer 5 V,"Alarm sound (optional, not on the PCB)",1,4.24,4.24,AliExpress listing price,https://ar.aliexpress.com/item/1005002190358602.html
+Breadboard kit with jumper wires and power supply,Breadboard version wiring and 5V power rail,1,5.78,5.78,AliExpress listing price,https://ar.aliexpress.com/item/1005006143786009.html
+USB data cable (to ESP32 board),Power and programming,1,3.95,3.95,AliExpress listing price (I already owned a cable),https://ar.aliexpress.com/item/1005007516957301.html
+Shipping: AliExpress parts,Parts delivery,1,0.00,0.00,Free with AliExpress Choice shipping,https://www.aliexpress.com/
+TOTAL (including shipping),,,,45.15,,
