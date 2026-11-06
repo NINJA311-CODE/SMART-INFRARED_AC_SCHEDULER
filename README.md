@@ -49,9 +49,10 @@ Say you want the AC on from 08:00 to 17:00 at 22°C. Set that once and it happen
 
 ## Quick start
 
-1. Install Arduino IDE 2.x, the ESP32 board package and the libraries listed under Software below.
-2. Put your MQTT details in the config (see Configuration), upload, and open the Serial Monitor at 115200 baud.
-3. Connect to the Wi-Fi hotspot the device creates, then go to Menu > Register new AC and press each button on your AC remote when the OLED asks.
+1. Create 2 clusters on HiveMQ Cloud. One is for the normal MQTT connection (the device and the dashboard) and the other is for OTA firmware updates. Make credentials for each.
+2. Install Arduino IDE 2.x, the ESP32 board package and the libraries listed under Software below.
+3. Put both sets of HiveMQ details in the config (see Configuration), upload, and open the Serial Monitor at 115200 baud.
+4. Connect to the Wi-Fi hotspot the device creates, then go to Menu > Register new AC and press each button on your AC remote when the OLED asks.
 
 ## Hardware
 
@@ -67,12 +68,15 @@ Say you want the AC on from 08:00 to 17:00 at 22°C. Set that once and it happen
 | IR LED with driver stage | Sends commands to the AC |
 | 6 push buttons | Up, down, left, right, OK, back |
 | Buzzer | Feedback and alarms |
+| USB to 2-wire cable (PCB version only) | Power |
 | Custom PCB (EasyEDA Pro, made by JLCPCB) | Rev 1 board |
 | 3D-printed enclosure | Housing |
 
 Parts lists with links and prices in USD: `BREADBOARD-BOM.csv` for the breadboard version and `bom_pcb.csv` for the PCB version.
 
 ## ‼️THERE IS ONE BREADBOARD AND ONE PCB VERSION OF THIS PROJECT‼️
+
+The PCB version also needs a USB to 2-wire cable to power it.
 
 My prototype used a 2N2222 and an S8050 in the Darlington pair. This BOM and diagram show two SS8050s, which should handle the LED current more comfortably, but I haven’t tested that exact pair.
 
@@ -89,15 +93,15 @@ Pinout:
 
 ## How it works
 
-The main loop never sits in a delay. It keeps cycling through the buttons, web server, MQTT, IR capture, sensor and display, so a dropped Wi-Fi connection or the 8 second IR learning window can't lock anything up.
+Mostly it's one big loop. It checks the buttons, the web server, MQTT, the IR receiver, the sensor and the display one after another and never sits in a delay, which is why a dead wifi connection or the 8 second IR learning window doesn't freeze the rest.
 
-When more than one thing wants to control the AC, emergency cooling goes first (it needs a valid SHT40 reading), then the one-time event, then the daily schedule. Manual control beats all of them, including emergency cooling, until you press Resume schedule. Buttons, the local page and the cloud all follow the same rules.
+The tricky part was deciding who's in charge when several things want the AC at the same time. I settled on emergency cooling first (only if the SHT40 gives a valid reading), then the one-time event, then the daily schedule. Manual control beats all of them, emergency cooling included, and stays in charge until you press Resume schedule. A button press, the local page and the cloud all go through the same rules.
 
-Emergency cooling starts at 35°C and ends once the room drops below 24°C. It has to run for at least an hour and can't retrigger more than once a minute, so it doesn't keep switching on and off. It's a convenience feature, not a certified safety system.
+Emergency cooling starts at 35°C and only stops once the room is under 24°C. It runs at least an hour and waits 60 seconds before it can trigger again, so it doesn't bounce on and off around the threshold. I'd call it a convenience feature, not a certified safety system.
 
-To learn a remote, the VS1838B records the raw mark and space timings for up to 8 seconds (a buffer of 400 entries). Anything that arrives within 500 ms of the ESP32 sending its own signal gets ignored, so it doesn't learn itself. Each code is saved to flash (NVS) straight away and you can test-fire it. Settings are stored field by field with version numbers instead of as raw structs, to avoid compiler padding corrupting them between builds.
+For learning a remote, the VS1838B records the raw timings of the signal for up to 8 seconds (a buffer of 400 entries). Anything that shows up within 500 ms of the ESP32 sending its own signal gets ignored, otherwise it would learn its own reflection. Each code is saved to flash (NVS) right away and you can test-fire it to check. Settings are saved one field at a time with version numbers instead of as raw structs, so compiler padding can't corrupt them between builds.
 
-The dashboard only sends commands. The ESP32 checks them, clamps the values, applies them and publishes the new state back, so the board is always the source of truth.
+The dashboard has no scheduling logic of its own. It sends a command, the ESP32 checks it, clamps the values, applies it and sends the new state back, so what you see is what the board is really doing.
 
 ## Run it locally
 
@@ -118,6 +122,8 @@ RTClib, Adafruit GFX Library, Adafruit SSD1306, Adafruit Unified Sensor, Adafrui
 An offline build keeps the scheduler, clock, buttons, IR learning and emergency logic. `DECODE_MODE` turns the firmware into a sniffer that prints decoded signals and a C array to Serial.
 
 ### Configuration
+
+You need 2 HiveMQ Cloud clusters for this. The `MQTT_*` values come from the first one and the `OTA_MQTT_*` values from the second.
 
 ```cpp
 #define MQTT_HOST       "<HIVEMQ_HOST>"
