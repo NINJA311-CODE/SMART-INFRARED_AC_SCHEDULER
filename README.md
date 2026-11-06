@@ -3,7 +3,7 @@
 <img width="1152" height="864" alt="image" src="https://github.com/user-attachments/assets/9fe1655c-b94f-45e5-96f0-592623fc27ec" />
 
 
-An ESP32 controller that gives an ordinary infrared air conditioner schedules, remote control and temperature-based protection, and keeps working when the internet goes down.
+An ESP32 box that adds schedules, remote control and a temperature safety net to a normal infrared AC, and keeps running even when the internet goes down.
 
 
 **Live dashboard:** https://esp32ac.lovable.app
@@ -25,7 +25,7 @@ Cloud-only smart plugs and controllers don't fully fix this, because if the Wi-F
 
 ## How you would use it
 
-Set a daily window, say 08:00 to 17:00 at 22°C, and the device switches the AC on and off by itself every day. Before you fly home, add a one-time event for your arrival (for example 3 Oct 2026, 06:00, 22°C, auto-off after 3 hours) so the room is already cool when you walk in. If you want to take over, press a button or use the dashboard to override, and press Resume schedule to hand control back.
+Say you want the AC on from 08:00 to 17:00 at 22°C. Set that once and it happens every day. Before flying home you can add a one-time event for your arrival (3 Oct 2026, 06:00, 22°C, off again after 3 hours) so the room is already cool when you walk in. To take over, use a button or the dashboard, then press Resume schedule when you're done.
 
 ## Images
 
@@ -39,19 +39,19 @@ Set a daily window, say 08:00 to 17:00 at 22°C, and the device switches the AC 
 
 ## Features
 
-- Daily schedule with start and end time, a 17 to 30°C target, and support for overnight windows that cross midnight.
-- One-time dated event with its own target temperature and an optional auto-off from 0 to 24 hours. It survives a power cut: after a reboot the firmware checks the clock and resumes if the event window is still open.
-- Learns your AC's own remote at raw timing level. It stores 16 commands (power on, power off, and 17 to 30°C) in flash, so they survive reboots.
-- Works offline. A DS3231 clock keeps time, six buttons and an OLED handle setup, and the ESP32 also serves a local web page.
-- Remote control through a React dashboard (built with Lovable) over TLS MQTT on HiveMQ Cloud.
-- Emergency cooling: if the room reaches 35°C and no manual override is active, the AC turns on at 20°C and the buzzer sounds for 2 seconds.
-- Over-the-air firmware updates through a second MQTT channel.
+- Daily on/off schedule with a 17 to 30°C target. Windows that cross midnight work too.
+- A one-time event for a specific date, with its own temperature and an optional auto-off timer of up to 24 hours. If the power cuts out, the ESP32 checks the clock after rebooting and picks the event back up if it's still running.
+- You teach it your own AC remote by pressing each button once. It saves 16 commands (on, off, and 17 to 30°C) in flash.
+- Everything works with no internet. The DS3231 keeps the time, the OLED and six buttons are enough to set it up, and the ESP32 also hosts a small local web page.
+- From anywhere else you use the dashboard I built with Lovable, which talks to the board over MQTT (HiveMQ Cloud, TLS).
+- If the room reaches 35°C and nobody has taken manual control, it turns the AC on at 20°C and the buzzer beeps for 2 seconds.
+- Firmware updates can be pushed over a second MQTT channel.
 
 ## Quick start
 
 1. Install Arduino IDE 2.x, the ESP32 board package and the libraries listed under Software below.
-2. Fill in your MQTT details (see Configuration), plug in the board, upload, and open the Serial Monitor at 115200 baud.
-3. Join the Wi-Fi setup hotspot the device creates, then choose Menu > Register new AC and press each button on your AC remote when the OLED asks.
+2. Put your MQTT details in the config (see Configuration), upload, and open the Serial Monitor at 115200 baud.
+3. Connect to the Wi-Fi hotspot the device creates, then go to Menu > Register new AC and press each button on your AC remote when the OLED asks.
 
 ## Hardware
 
@@ -89,22 +89,15 @@ Pinout:
 
 ## How it works
 
-The firmware never blocks on delays. The main loop polls the buttons, web server, MQTT, IR capture, sensor and display in turn, so a dead Wi-Fi connection or an 8-second IR learning window doesn't freeze anything else.
+The main loop never sits in a delay. It keeps cycling through the buttons, web server, MQTT, IR capture, sensor and display, so a dropped Wi-Fi connection or the 8 second IR learning window can't lock anything up.
 
-Four things can control the AC, and they are checked in this order:
+When more than one thing wants to control the AC, emergency cooling goes first (it needs a valid SHT40 reading), then the one-time event, then the daily schedule. Manual control beats all of them, including emergency cooling, until you press Resume schedule. Buttons, the local page and the cloud all follow the same rules.
 
-1. Emergency cooling (needs a valid SHT40 reading and no manual override)
-2. The one-time event
-3. The daily schedule
-4. Manual control, which wins until you press Resume schedule
+Emergency cooling starts at 35°C and ends once the room drops below 24°C. It has to run for at least an hour and can't retrigger more than once a minute, so it doesn't keep switching on and off. It's a convenience feature, not a certified safety system.
 
-The same rule applies whether the command came from the buttons, the local page or the cloud.
+To learn a remote, the VS1838B records the raw mark and space timings for up to 8 seconds (a buffer of 400 entries). Anything that arrives within 500 ms of the ESP32 sending its own signal gets ignored, so it doesn't learn itself. Each code is saved to flash (NVS) straight away and you can test-fire it. Settings are stored field by field with version numbers instead of as raw structs, to avoid compiler padding corrupting them between builds.
 
-The emergency logic uses hysteresis so it doesn't flap. It triggers at 35°C, clears below 24°C, must run for at least 1 hour, and can retrigger at most once every 60 seconds. This is a thermal-response feature, not a certified safety system.
-
-For IR learning, the VS1838B captures raw mark and space timings in an 8-second window (buffer of 400 entries). Frames that arrive within 500 ms of the ESP32's own transmission are ignored so it doesn't learn its own reflection. Codes are saved to NVS immediately, and a test-fire lets you check each one. Settings are stored field by field with version numbers, not as raw structs, so compiler padding can't corrupt them between builds.
-
-The React dashboard doesn't copy the scheduler logic. It sends a command, the ESP32 validates and clamps it, applies it, and publishes the new state back. The ESP32 stays the source of truth.
+The dashboard only sends commands. The ESP32 checks them, clamps the values, applies them and publishes the new state back, so the board is always the source of truth.
 
 ## Run it locally
 
@@ -140,7 +133,7 @@ An offline build keeps the scheduler, clock, buttons, IR learning and emergency 
 #define OTA_MQTT_TOPIC  "fleet/firmware/update"
 ```
 
-Wi-Fi credentials are not in the code. WiFiManager opens a hotspot for them, and if the device can't get online it carries on in offline mode.
+Wi-Fi credentials aren't in the code. WiFiManager opens a hotspot where you enter them, and if the device can't get online it just carries on in offline mode.
 
 ### MQTT topics WEBAPP HANDLES ALL OF THIS, ONLY NEEDS YOUR OWN HIVEMQ CREDENTIALS‼️
 
@@ -151,11 +144,11 @@ Wi-Fi credentials are not in the code. WiFiManager opens a hotspot for them, and
 | `home/ac/event_set` | `{"en":true,"y":2026,"mo":10,"d":3,"h":6,"mi":0,"t":22,"off":3}` |
 | `home/ac/status` | Published every 5 s: `{"temp":28.4,"hum":52.1,"acOn":true,"setTemp":22,"mode":"schedule"}` |
 
-Modes reported are `emergency`, `manual`, `schedule` and `schedule_off`.
+The reported modes are `emergency`, `manual`, `schedule` and `schedule_off`.
 
 ### Local HTTP routes
 
-`/` (dashboard, refreshes every 1.5 s), `/status`, `/cmd?action=on|off`, `/settemp?c=22`, `/schedule?...`, `/event?...`, `/resume`.
+`/` (the dashboard, refreshes every 1.5 s), `/status`, `/cmd?action=on|off`, `/settemp?c=22`, `/schedule?...`, `/event?...`, `/resume`.
 
 
 
@@ -163,22 +156,17 @@ Modes reported are `emergency`, `manual`, `schedule` and `schedule_off`.
 
 ![PCB](https://github.com/user-attachments/assets/12512b9c-c309-4bf5-b71e-6542b701ef97)
 
-The Rev 1 board was designed in EasyEDA Pro and made by JLCPCB. When it arrived I found that I had set the design rules too tight and trusted the autorouter around the 2.54 mm headers, which left a path between 3.3V and GND.
+I designed the Rev 1 board in EasyEDA Pro and had JLCPCB make it. It arrived with a short between 3.3V and GND. I'd set the design rules too tight and let the autorouter handle the area around the 2.54 mm headers.
 
-I found it with the power off and a multimeter in continuity mode, checking 3.3V against GND and following the short back to the layout. That showed the firmware was fine and the board wasn't. To keep testing, I rebuilt the same circuit on a breadboard and validated everything there: the OLED, clock, sensor, buttons, IR learning and sending, schedules, one-time events, emergency logic, local web control, MQTT and flash storage.
+I found it with the power off and the multimeter in continuity mode, checking 3.3V against GND and tracing the short back to the layout. The firmware was fine, the board wasn't, so I rebuilt the same circuit on a breadboard and tested everything there: OLED, clock, sensor, buttons, IR learning and sending, schedules, one-time events, emergency cooling, local web control, MQTT and flash storage.
 
-This issue is fixed in the latest Gerber file in `PCB/`. The Rev 2 plan: minimum clearance of 0.254 mm (10 mil), 4-spoke thermal relief on ground pours, hand-routed signals near the headers, and a Gerber and 3D inspection before ordering.
+The latest Gerber file in `PCB/` has this fixed. For Rev 2 I'm using a minimum clearance of 0.254 mm (10 mil), 4-spoke thermal relief on the ground pours and hand-routed signals near the headers, and I check the Gerbers and the 3D view before ordering.
 
-## Known limitations
+## Known issues
 
-- MQTT uses TLS, but the firmware calls `setInsecure()`, so the broker certificate is not verified.
-- The OTA message carries a GitHub access token in its payload. This is fine for a prototype and wrong for a product. Scoped short-lived tokens, signed firmware and broker ACLs are the fix.
-- The power-on self-test only checks parts that can answer back (OLED, DS3231, SHT40). The IR LED, receiver wiring and buzzer need a manual check.
-- Credentials must be kept out of the repository before you publish a real deployment.
+MQTT uses TLS, but the firmware calls `setInsecure()`, so the broker certificate isn't checked. The OTA message carries a GitHub access token in its payload, which is okay for a prototype and not something to ship. The power-on self-test can only check parts that answer back (OLED, DS3231, SHT40), so the IR LED, receiver wiring and buzzer need a manual check. Also keep your credentials out of the repository.
 
-## Roadmap
-
-Fabricate and test the Rev 2 PCB, certificate validation, signed OTA, multiple schedule windows, energy metering, and support for more than one AC.
+Next I want to test the Rev 2 PCB, add certificate checking, signed OTA, multiple schedule windows, energy metering and support for more than one AC.
 
 ## Credits
 
