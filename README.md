@@ -8,7 +8,8 @@ An ESP32 box that adds schedules, remote control and a temperature safety net to
 
 (To connect it to your ESP32 enter your HiveMQ broker details in the dashboard settings.)
 
-**Demo video:**https://youtu.be/KKiCB_PlKlA?si=UUE7-kHRNs0rGYna
+**Demo video:**
+https://youtu.be/KKiCB_PlKlA?si=UUE7-kHRNs0rGYna
 
 ## Why I made it
 
